@@ -1,0 +1,78 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "demo-app.fullname" . }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+  {{- with .Values.deploymentAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if not .Values.autoscaling.maxReplicas }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "demo-app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        {{- if .Values.configMap.data }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "demo-app.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "demo-app.serviceAccountName" . }}
+      hostNetwork: {{ .Values.hostNetwork }}
+      dnsPolicy: {{ .Values.dnsPolicy | default (ternary "ClusterFirstWithHostNet" "ClusterFirst" .Values.hostNetwork) }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        {{- range .Values.containers }}
+        - name: {{ .name }}
+          image: "{{ .image.repository }}:{{ .image.tag | default $.Chart.AppVersion }}"
+          imagePullPolicy: {{ .image.pullPolicy | default "IfNotPresent" }}
+          {{- if .ports }}
+          ports:
+            {{- toYaml .ports | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .securityContext | nindent 12 }}
+          {{- if or .env $.Values.configMap.data }}
+          env:
+            {{- with .env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- if or .envFrom $.Values.configMap.data }}
+          envFrom:
+            {{- if $.Values.configMap.data }}
+            - configMapRef:
+                name: {{ include "demo-app.fullname" $ }}
+            {{- end }}
+            {{- with .envFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- include "demo-app.probe" (dict "probe" .livenessProbe "key" "livenessProbe") | nindent 10 }}
+          {{- include "demo-app.probe" (dict "probe" .readinessProbe "key" "readinessProbe") | nindent 10 }}
+          resources:
+            {{- toYaml .resources | nindent 12 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

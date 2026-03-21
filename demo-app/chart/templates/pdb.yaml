@@ -1,0 +1,24 @@
+{{- if or (gt (int .Values.replicaCount) 1) (gt (int .Values.autoscaling.maxReplicas) 1) -}}
+{{- if and .Values.podDisruptionBudget.minAvailable .Values.podDisruptionBudget.maxUnavailable -}}
+{{- fail "podDisruptionBudget: set only one of minAvailable or maxUnavailable, not both" -}}
+{{- end -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "demo-app.fullname" . }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+  {{- with .Values.podDisruptionBudget.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "demo-app.selectorLabels" . | nindent 6 }}
+  {{- if .Values.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- else if .Values.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+{{- end }}

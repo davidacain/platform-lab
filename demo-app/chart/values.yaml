@@ -1,0 +1,113 @@
+fullnameOverride: "demo-app"
+
+replicaCount: 1
+
+containers:
+  - name: app
+    image:
+      repository: demo-app
+      tag: ""
+      pullPolicy: IfNotPresent
+    ports:
+      - name: http
+        containerPort: 8080
+    env:
+      - name: PORT
+        value: "8080"
+    envFrom: []
+      # - secretRef:
+      #     name: my-secret
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop:
+          - ALL
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+    livenessProbe:
+      enabled: true
+      type: httpGet  # httpGet | grpc | tcpSocket
+      httpGet:
+        path: /
+        port: http
+      grpc:
+        port: 8080
+        service: ""  # optional gRPC health service name
+      tcpSocket:
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      failureThreshold: 3
+    readinessProbe:
+      enabled: true
+      type: httpGet  # httpGet | grpc | tcpSocket
+      httpGet:
+        path: /
+        port: http
+      grpc:
+        port: 8080
+        service: ""  # optional gRPC health service name
+      tcpSocket:
+        port: http
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      failureThreshold: 3
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: http
+  annotations: {}
+
+ingress:
+  className: ""
+  annotations: {}
+  hosts: []
+  # - host: demo-app.local
+  #   paths:
+  #     - path: /
+  #       pathType: Prefix
+  tls: []
+
+autoscaling:
+  annotations: {}
+  # minReplicas: 2
+  # maxReplicas: 10
+  # targetCPUUtilizationPercentage: 80   # set one of these, not both
+  # targetMemoryUtilizationPercentage: 80
+
+podDisruptionBudget:
+  minAvailable: 1
+  # maxUnavailable: 1
+  annotations: {}
+
+configMap:
+  annotations: {}
+  data: {}
+  # MY_CONFIG_KEY: my-config-value
+
+deploymentAnnotations: {}
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+hostNetwork: false
+dnsPolicy: ""  # defaults to ClusterFirstWithHostNet when hostNetwork is true, ClusterFirst otherwise
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
