@@ -1,0 +1,23 @@
+# ArgoCD Application for kri local testing.
+# Deploys demo-app from the local chart to the in-cluster target.
+# "in-cluster" is the built-in ArgoCD cluster name for the control cluster itself.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/scrubious/platform-lab
+    targetRevision: HEAD
+    path: demo-app/chart
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    name: in-cluster
+    namespace: demo
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

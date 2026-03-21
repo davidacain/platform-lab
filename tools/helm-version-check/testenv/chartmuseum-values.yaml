@@ -1,0 +1,37 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/helm/chartmuseum
+  tag: v0.16.2
+
+service:
+  type: NodePort
+  port: 8080
+  nodePort: 30800
+
+env:
+  open:
+    DISABLE_API: false          # enable chart push via HTTP API
+    ALLOW_OVERWRITE: true       # allow re-pushing same version during dev
+  secret:
+    BASIC_AUTH_USER: testuser
+    BASIC_AUTH_PASS: testpass
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: false  # chartmuseum writes a temp index to disk
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+persistence:
+  enabled: false  # in-memory only, fine for local testing

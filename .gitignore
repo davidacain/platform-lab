@@ -1,3 +1,28 @@
+<<<<<<< Updated upstream
+=======
+# Claude Code local memory
+.claude/
+
+# Go binaries and build artifacts
+hvc
+psi
+kri
+*.exe
+*.test
+*.out
+dist/
+
+# Go test and coverage
+coverage.out
+coverage.html
+
+# Helm packaged charts
+*.tgz
+
+# Local dev artifacts
+/tmp/
+
+>>>>>>> Stashed changes
 # Local .terraform directories
 .terraform/
 
