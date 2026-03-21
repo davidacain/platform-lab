@@ -1,0 +1,41 @@
+# Prometheus deployment for kri local testing in k3d.
+# Deploys Prometheus server + kube-state-metrics only.
+# Disables alertmanager, pushgateway, and node-exporter (not needed for kri).
+
+alertmanager:
+  enabled: false
+
+prometheus-pushgateway:
+  enabled: false
+
+prometheus-node-exporter:
+  enabled: false
+
+# kube-state-metrics — provides kube_pod_info, resource requests/limits
+kube-state-metrics:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 50m
+      memory: 64Mi
+
+server:
+  global:
+    scrape_interval: 30s
+    evaluation_interval: 30s
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 200m
+      memory: 512Mi
+
+  persistentVolume:
+    enabled: false  # in-memory only for lab use
+
+  retention: "24h"
