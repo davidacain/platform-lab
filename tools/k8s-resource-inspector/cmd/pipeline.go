@@ -21,6 +21,14 @@ import (
 func buildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interface, apps []argo.App, window string, confidenceThreshold float64) ([]output.PodRow, error) {
 	minCPU := cfg.MinCPUMillis()
 	minMem := cfg.MinMemoryMi()
+
+	listerCache := map[string]pods.PodLister{}
+	metricsCache := map[string]*metrics.Client{}
+
+	type gitCacheKey struct{ repoURL, revision, valuesFile string }
+	type gitCacheEntry struct{ config *gitvals.ValuesConfig }
+	gitCache := map[gitCacheKey]*gitCacheEntry{}
+
 	var rows []output.PodRow
 
 	for _, app := range apps {
@@ -31,9 +39,14 @@ func buildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 			continue
 		}
 
-		lister, err := pods.NewPromLister(promURL)
-		if err != nil {
-			return nil, fmt.Errorf("create pod lister for app %s: %w", app.Name, err)
+		lister, ok := listerCache[promURL]
+		if !ok {
+			var err error
+			lister, err = pods.NewPromLister(promURL)
+			if err != nil {
+				return nil, fmt.Errorf("create pod lister for app %s: %w", app.Name, err)
+			}
+			listerCache[promURL] = lister
 		}
 
 		podList, err := lister.ListPods(ctx, app.Namespace)
@@ -42,9 +55,13 @@ func buildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 			continue
 		}
 
-		metricsClient, err := metrics.NewClient(promURL)
-		if err != nil {
-			return nil, fmt.Errorf("create metrics client for app %s: %w", app.Name, err)
+		metricsClient, ok := metricsCache[promURL]
+		if !ok {
+			metricsClient, err = metrics.NewClient(promURL)
+			if err != nil {
+				return nil, fmt.Errorf("create metrics client for app %s: %w", app.Name, err)
+			}
+			metricsCache[promURL] = metricsClient
 		}
 
 		usageMap, err := metricsClient.UsageMetrics(ctx, app.Namespace, window)
@@ -54,9 +71,15 @@ func buildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 
 		var gitConfig *gitvals.ValuesConfig
 		if app.RepoURL != "" && len(app.ValueFiles) > 0 {
-			gitConfig, err = gitvals.ReadValues(app.RepoURL, app.TargetRevision, app.Path, app.ValueFiles[0])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warn: read git values for app %s: %v\n", app.Name, err)
+			gk := gitCacheKey{app.RepoURL, app.TargetRevision, app.ValueFiles[0]}
+			if cached, ok := gitCache[gk]; ok {
+				gitConfig = cached.config
+			} else {
+				gitConfig, err = gitvals.ReadValues(app.RepoURL, app.TargetRevision, app.Path, app.ValueFiles[0])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warn: read git values for app %s: %v\n", app.Name, err)
+				}
+				gitCache[gk] = &gitCacheEntry{config: gitConfig}
 			}
 		}
 

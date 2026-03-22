@@ -3,6 +3,7 @@ package argo
 import (
 	"context"
 	"fmt"
+	"os"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -45,8 +46,12 @@ func List(ctx context.Context, dynClient dynamic.Interface, argoNamespace string
 		destNS, _ := dest["namespace"].(string)
 
 		// ArgoCD supports both spec.source (single) and spec.sources (multi).
-		// Phase 1 reads the primary source only.
+		// kri only reads the primary source; skip multi-source apps with a warning.
 		source, _ := spec["source"].(map[string]interface{})
+		if _, hasSources := spec["sources"]; hasSources && source == nil {
+			fmt.Fprintf(os.Stderr, "warn: app %q uses spec.sources (multi-source); skipping\n", item.GetName())
+			continue
+		}
 		repoURL, _ := source["repoURL"].(string)
 		targetRevision, _ := source["targetRevision"].(string)
 		path, _ := source["path"].(string)

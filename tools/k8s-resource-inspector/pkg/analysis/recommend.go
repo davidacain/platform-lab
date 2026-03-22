@@ -11,10 +11,11 @@ import (
 
 // Recommendation holds a rightsizing suggestion for a single container.
 type Recommendation struct {
-	Text       string // human-readable; empty when held below confidence threshold
-	Hold       bool
-	HoldReason string
-	Resources  *ResourceValues // structured values for plan generation; nil when held or within tolerance
+	Text         string // human-readable; empty when held below confidence threshold
+	IsActionable bool   // true only when a real recommendation was produced (not held or within tolerance)
+	Hold         bool
+	HoldReason   string
+	Resources    *ResourceValues // structured values for plan generation; nil when held or within tolerance
 }
 
 // ResourceValues holds the final desired state for container resources.
@@ -109,7 +110,8 @@ func recommendStatic(u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Qu
 	}
 
 	return Recommendation{
-		Text: strings.Join(parts, ", "),
+		Text:         strings.Join(parts, ", "),
+		IsActionable: true,
 		Resources: &ResourceValues{
 			CPURequest: cpuReqStr,
 			CPULimit:   cpuLimStr,
@@ -127,7 +129,8 @@ func recommendRunaway(u metrics.Usage, memLim resource.Quantity) Recommendation 
 	recMi := int64(math.Ceil(u.MemP99 * 1.5 / 1048576))
 	recStr := fmt.Sprintf("%dMi", recMi)
 	return Recommendation{
-		Text: fmt.Sprintf("Increase MEM limit to %dMi (RUNAWAY)", recMi),
+		Text:         fmt.Sprintf("Increase MEM limit to %dMi (RUNAWAY)", recMi),
+		IsActionable: true,
 		Resources: &ResourceValues{
 			MemRequest: recStr,
 			MemLimit:   recStr,

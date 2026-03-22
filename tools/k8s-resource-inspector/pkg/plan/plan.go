@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path"
+	"path/filepath"
 
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/output"
 	"gopkg.in/yaml.v3"
@@ -52,11 +53,11 @@ type AppPlan struct {
 // Multiple pods of the same app+container are deduplicated — first occurrence wins.
 func Build(rows []output.PodRow, window string) []AppPlan {
 	appIndex := map[string]int{}
-	seen := map[string]bool{}
+	seen := map[string]string{} // dedupKey → recommendation text for divergence detection
 	var plans []AppPlan
 
 	for _, r := range rows {
-		if r.Recommendation.Hold || r.Recommendation.Text == "" || r.Recommendation.Text == "within tolerance" {
+		if !r.Recommendation.IsActionable {
 			continue
 		}
 		if r.Recommendation.Resources == nil {
@@ -64,10 +65,14 @@ func Build(rows []output.PodRow, window string) []AppPlan {
 		}
 
 		dedupKey := r.AppName + "/" + r.Container
-		if seen[dedupKey] {
+		if stored, ok := seen[dedupKey]; ok {
+			if r.Recommendation.Text != stored {
+				fmt.Fprintf(os.Stderr, "warn: %s: divergent recommendations across pods (keeping first): %q vs %q\n",
+					dedupKey, stored, r.Recommendation.Text)
+			}
 			continue
 		}
-		seen[dedupKey] = true
+		seen[dedupKey] = r.Recommendation.Text
 
 		idx, exists := appIndex[r.AppName]
 		if !exists {
@@ -141,6 +146,14 @@ func Read(dir string) ([]AppPlan, error) {
 	if err := yaml.Unmarshal(data, &plans); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", p, err)
 	}
+	for i, ap := range plans {
+		if ap.App == "" {
+			return nil, fmt.Errorf("%s: entry %d missing required field 'app'", p, i)
+		}
+		if len(ap.Containers) == 0 {
+			return nil, fmt.Errorf("%s: app %q has no containers", p, ap.App)
+		}
+	}
 	return plans, nil
 }
 
@@ -148,7 +161,7 @@ func planPath(dir string) string {
 	if dir == "" {
 		return "kri-plan.yaml"
 	}
-	return path.Join(dir, "kri-plan.yaml")
+	return filepath.Join(dir, "kri-plan.yaml")
 }
 
 func fmtCPU(cores float64, hasData bool) string {

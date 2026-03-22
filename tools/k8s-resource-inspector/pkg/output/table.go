@@ -122,7 +122,7 @@ func printFindings(rows []PodRow) {
 			ff = append(ff, finding{"HPA", lines})
 		}
 
-		if r.Recommendation.Text != "" && r.Recommendation.Text != "within tolerance" && !r.Recommendation.Hold {
+		if r.Recommendation.IsActionable {
 			text := r.Recommendation.Text
 			if r.ValuesFilePath != "" {
 				text += fmt.Sprintf("  [%s]", r.ValuesFilePath)
@@ -224,7 +224,7 @@ func recFlag(r analysis.Recommendation) string {
 	if r.Text == "" {
 		return "-"
 	}
-	if r.Text == "within tolerance" {
+	if !r.IsActionable {
 		return "ok"
 	}
 	return "YES"
