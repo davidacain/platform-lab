@@ -22,6 +22,24 @@ go build -o ~/go/bin/kri ./tools/k8s-resource-inspector/
 clusters:
   - argocd_cluster: in-cluster   # matches spec.destination.name in ArgoCD Application CR
     prometheus: http://localhost:9090
+
+# Optional: namespace where ArgoCD Application CRs live (default: "argocd")
+argocd_namespace: argocd
+
+# Optional: floor values for recommendations (defaults shown)
+minimums:
+  cpu_millicores: 10
+  memory_mi: 16
+
+# Optional: git committer identity for kri-authored commits (defaults shown)
+git:
+  author_name: kri
+  author_email: kri@noreply.local
+
+# Optional: GitHub settings (defaults shown)
+github:
+  base_branch: main
+  api_url: https://api.github.com   # override for GitHub Enterprise Server
 ```
 
 ## Usage
@@ -148,13 +166,39 @@ Rows flagged with `WARN`/`ERROR` in HPA or `YES` in REC are expanded in the **Fi
 | MIXED   | Pods within the same workload disagree — investigate divergence before acting |
 | UNKNOWN | Insufficient data |
 
-GROWTH requires both a relative trend (>1% of p50/hr) and p99 above 30% of the memory limit. Pods well within their limit are classified as STATIC even if a small trend is detected, to avoid noise from low-utilisation workloads.
+Classification thresholds:
+- **RUNAWAY**: mem p99 ≥ 90% of limit
+- **SPIKY**: CPU p99/p50 ≥ 2.0 or mem p99/p50 ≥ 1.8
+- **GROWTH**: trend > 1% of mem p50/hr AND mem p99 ≥ 30% of limit (pods well within their limit are STATIC even with a small trend, to avoid noise)
+- **STATIC**: CPU p99/p50 < 1.5 AND mem p99/p50 < 1.3 AND flat trend
+
+Recommendations add headroom above observed p99: **+20% for CPU** (rounded up to nearest 10m), **+30% for memory** (rounded up to nearest Mi). A change is only emitted when the recommended value differs from the current request by more than 10%.
+
+### HPA validation
+
+| Check | Condition | Severity |
+|-------|-----------|----------|
+| CPU request missing | HPA targets CPU but no CPU request set | ERROR |
+| Memory request missing | HPA targets memory but no memory request set | ERROR |
+| Target utilization too high | HPA target % above p95 actual utilization | WARN |
+| Target utilization too low | HPA target % well below p50 | WARN |
+| Min replicas too low | minReplicas = 1 on a SPIKY workload | WARN |
+| Max replicas too low | maxReplicas hit in Prometheus history | WARN |
+| Scaling metric mismatch | CPU HPA on a memory-bound workload | WARN |
 
 ## Data sources
 
 - **Pod inventory**: `kube_pod_container_resource_requests`, `kube_pod_container_resource_limits`, `kube_pod_status_phase` from kube-state-metrics
+- **Workload resolution**: `kube_pod_owner` (pod → ReplicaSet) + `kube_replicaset_owner` (RS → Deployment) chain
 - **CPU usage**: `rate(container_cpu_usage_seconds_total[5m])` quantiles via `quantile_over_time`
 - **Memory usage**: `container_memory_working_set_bytes` quantiles via `quantile_over_time`
 - **Memory trend**: `deriv(container_memory_working_set_bytes[window]) * 3600` (bytes/hour)
 - **HPA config**: `autoscaling/v2` HorizontalPodAutoscaler resources via Kubernetes API
 - **Values files**: Helm values read directly from git via shallow clone
+
+## Roadmap
+
+Planned evolution into a Kubernetes operator:
+- **Ignore rules**: skip specific apps, workloads, or containers via ConfigMap or CRD
+- **Values key path mapping**: per-app annotation or CRD field for charts with non-standard values structure (e.g. `containers[].resources` vs top-level `resources`)
+- **Scheduling**: operator runs automatically on a defined interval

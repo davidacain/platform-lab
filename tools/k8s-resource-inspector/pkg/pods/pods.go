@@ -17,6 +17,7 @@ type Pod struct {
 	PodName       string
 	ContainerName string
 	NodeName      string
+	WorkloadName  string // Deployment/StatefulSet/DaemonSet name; falls back to pod name
 	CPURequest    resource.Quantity
 	CPULimit      resource.Quantity
 	MemRequest    resource.Quantity
@@ -124,12 +125,76 @@ func (p *PromLister) ListPods(ctx context.Context, namespace string) ([]Pod, err
 		pod.NodeName = nodeMap[k.pod]
 	}
 
+	// Resolve workload name: pod → ReplicaSet/StatefulSet/DaemonSet → Deployment.
+	workloadMap, err := p.resolveWorkloadNames(ctx, namespace, now)
+	if err != nil {
+		// Non-fatal — fall back to pod name.
+		workloadMap = map[string]string{}
+	}
+	for k, pod := range pods {
+		if wl, ok := workloadMap[k.pod]; ok {
+			pod.WorkloadName = wl
+		} else {
+			pod.WorkloadName = k.pod
+		}
+	}
+
 	// Return as a flat slice. Order is non-deterministic (map iteration); Phase 7 will sort.
 	out := make([]Pod, 0, len(pods))
 	for _, pod := range pods {
 		out = append(out, *pod)
 	}
 	return out, nil
+}
+
+// resolveWorkloadNames returns a map of pod name → workload name (Deployment/StatefulSet/DaemonSet).
+// For Deployment pods it follows pod → ReplicaSet → Deployment.
+// For StatefulSet and DaemonSet pods it uses the owner name directly.
+func (p *PromLister) resolveWorkloadNames(ctx context.Context, namespace string, now time.Time) (map[string]string, error) {
+	// pod → immediate owner (RS, SS, DS, etc.)
+	ownerVec, err := p.queryVector(ctx,
+		fmt.Sprintf(`kube_pod_owner{namespace=%q,owner_kind=~"ReplicaSet|StatefulSet|DaemonSet"}`, namespace), now)
+	if err != nil {
+		return nil, fmt.Errorf("query pod owner: %w", err)
+	}
+
+	type ownerEntry struct {
+		ownerName string
+		ownerKind string
+	}
+	podOwner := make(map[string]ownerEntry) // pod → owner
+	for _, s := range ownerVec {
+		podOwner[string(s.Metric["pod"])] = ownerEntry{
+			ownerName: string(s.Metric["owner_name"]),
+			ownerKind: string(s.Metric["owner_kind"]),
+		}
+	}
+
+	// ReplicaSet → Deployment (follow the chain for Deployment pods).
+	rsVec, err := p.queryVector(ctx,
+		fmt.Sprintf(`kube_replicaset_owner{namespace=%q,owner_kind="Deployment"}`, namespace), now)
+	if err != nil {
+		return nil, fmt.Errorf("query replicaset owner: %w", err)
+	}
+	rsToDeployment := make(map[string]string) // RS name → Deployment name
+	for _, s := range rsVec {
+		rsToDeployment[string(s.Metric["replicaset"])] = string(s.Metric["owner_name"])
+	}
+
+	result := make(map[string]string, len(podOwner))
+	for pod, owner := range podOwner {
+		switch owner.ownerKind {
+		case "ReplicaSet":
+			if deployment, ok := rsToDeployment[owner.ownerName]; ok {
+				result[pod] = deployment
+			} else {
+				result[pod] = owner.ownerName // RS without a Deployment owner
+			}
+		default:
+			result[pod] = owner.ownerName // StatefulSet or DaemonSet
+		}
+	}
+	return result, nil
 }
 
 func (p *PromLister) queryVector(ctx context.Context, query string, ts time.Time) (model.Vector, error) {

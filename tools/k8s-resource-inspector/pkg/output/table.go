@@ -15,8 +15,9 @@ type PodRow struct {
 	AppName   string
 	Cluster   string
 	Namespace string
-	PodName   string
-	Container string
+	PodName      string
+	WorkloadName string
+	Container    string
 
 	// Inventory (from kube-state-metrics)
 	CPUReq resource.Quantity
@@ -90,19 +91,27 @@ func PrintTable(rows []PodRow) error {
 	return nil
 }
 
-// printFindings prints a findings block below the table for any flagged rows.
+// printFindings prints a findings block below the table, grouped by app+container
+// so that multi-replica deployments don't repeat the same finding for every pod.
 func printFindings(rows []PodRow) {
 	type finding struct {
 		label string
 		lines []string
 	}
-
-	var sections []struct {
+	type section struct {
 		header   string
 		findings []finding
 	}
 
+	seen := map[string]bool{}
+	var sections []section
+
 	for _, r := range rows {
+		key := r.AppName + "/" + r.WorkloadName + "/" + r.Container
+		if seen[key] {
+			continue
+		}
+
 		var ff []finding
 
 		if r.HPAStatus.Status == "WARN" || r.HPAStatus.Status == "ERROR" {
@@ -124,11 +133,9 @@ func printFindings(rows []PodRow) {
 		}
 
 		if len(ff) > 0 {
-			sections = append(sections, struct {
-				header   string
-				findings []finding
-			}{
-				header:   fmt.Sprintf("%s / %s / %s / %s", r.AppName, r.Namespace, r.PodName, r.Container),
+			seen[key] = true
+			sections = append(sections, section{
+				header:   fmt.Sprintf("  %-30s %-20s %-30s %-20s", r.AppName, r.Namespace, r.WorkloadName, r.Container),
 				findings: ff,
 			})
 		}
@@ -140,8 +147,9 @@ func printFindings(rows []PodRow) {
 
 	fmt.Println()
 	fmt.Println("── Findings ──────────────────────────────────────────────────────")
+	fmt.Printf("  %-30s %-20s %-30s %-20s\n", "ARGO_APP", "NAMESPACE", "WORKLOAD", "CONTAINER")
 	for _, s := range sections {
-		fmt.Printf("\n  %s\n", s.header)
+		fmt.Printf("\n%s\n", s.header)
 		for _, f := range s.findings {
 			for _, line := range f.lines {
 				fmt.Printf("    %-4s  %s\n", f.label, line)

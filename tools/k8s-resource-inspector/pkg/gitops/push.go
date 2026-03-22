@@ -16,7 +16,7 @@ import (
 
 // PushValuesFile clones the repo, writes values-resources.yaml on a new branch,
 // commits, and force-pushes. Returns the branch name.
-func PushValuesFile(repoURL, token, appName, chartPath string, containers []plan.ContainerPlan) (branchName string, err error) {
+func PushValuesFile(repoURL, token, appName, chartPath string, containers []plan.ContainerPlan, authorName, authorEmail string) (branchName string, err error) {
 	tmpDir, err := os.MkdirTemp("", "kri-push-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
@@ -62,8 +62,8 @@ func PushValuesFile(repoURL, token, appName, chartPath string, containers []plan
 
 	if _, err := w.Commit(fmt.Sprintf("chore(kri): rightsizing for %s", appName), &gogit.CommitOptions{
 		Author: &object.Signature{
-			Name:  "kri",
-			Email: "kri@noreply.local",
+			Name:  authorName,
+			Email: authorEmail,
 			When:  time.Now(),
 		},
 	}); err != nil {
