@@ -38,6 +38,7 @@ func init() {
 	applyCmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be applied without opening PRs")
 	applyCmd.Flags().StringVar(&window, "window", "7d", "Observation window (only used with --all)")
 	applyCmd.Flags().Float64Var(&confidenceThreshold, "confidence", 0.8, "Confidence threshold (only used with --all)")
+	applyCmd.Flags().StringVar(&planDir, "dir", "", "Directory to read kri-plan.yaml from (default: current directory)")
 	rootCmd.AddCommand(applyCmd)
 }
 
@@ -47,16 +48,21 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("GITHUB_TOKEN environment variable is not set")
 	}
 
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
 	var plans []plan.AppPlan
 
 	if applyAll {
-		p, err := buildPlansFromInspect()
+		p, err := buildPlansFromInspect(cfg)
 		if err != nil {
 			return err
 		}
 		plans = p
 	} else {
-		p, err := plan.Read()
+		p, err := plan.Read(planDir)
 		if err != nil {
 			return err
 		}
@@ -87,25 +93,20 @@ func runApply(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	return openPRs(token, applicable)
+	return openPRs(token, applicable, cfg)
 }
 
 // buildPlansFromInspect runs the full inspect pipeline, prints the table, and
 // returns a plan list for all apps with actionable recommendations.
-func buildPlansFromInspect() ([]plan.AppPlan, error) {
+func buildPlansFromInspect(cfg *config.Config) ([]plan.AppPlan, error) {
 	ctx := context.Background()
-
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("load config: %w", err)
-	}
 
 	dynClient, err := buildDynamicClient(kubeconfig, kubeCtx)
 	if err != nil {
 		return nil, fmt.Errorf("build kubernetes client: %w", err)
 	}
 
-	apps, err := listApps(ctx, dynClient)
+	apps, err := listApps(ctx, dynClient, cfg.ArgoNS())
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +138,7 @@ func buildPlansFromInspect() ([]plan.AppPlan, error) {
 		return nil, err
 	}
 
-	return plan.Build(rows), nil
+	return plan.Build(rows, window), nil
 }
 
 func printApplySummary(plans []plan.AppPlan) {
@@ -153,17 +154,18 @@ func printApplySummary(plans []plan.AppPlan) {
 	}
 }
 
-func openPRs(token string, plans []plan.AppPlan) error {
+func openPRs(token string, plans []plan.AppPlan, cfg *config.Config) error {
 	for _, p := range plans {
 		fmt.Printf("  %s  ", p.App)
 
-		branch, err := gitops.PushValuesFile(p.Repo, token, p.App, p.ValuesFile[:strings.LastIndex(p.ValuesFile, "/")], p.Containers)
+		chartPath := p.ValuesFile[:strings.LastIndex(p.ValuesFile, "/")]
+		branch, err := gitops.PushValuesFile(p.Repo, token, p.App, chartPath, p.Containers, cfg.GitAuthorName(), cfg.GitAuthorEmail())
 		if err != nil {
 			fmt.Printf("FAILED: %v\n", err)
 			continue
 		}
 
-		prURL, created, err := github.EnsurePR(token, p.Repo, branch, p.App, p.Containers)
+		prURL, created, err := github.EnsurePR(token, p.Repo, branch, p, cfg.BaseBranch(), cfg.GitHubAPIURL())
 		if err != nil {
 			fmt.Printf("pushed branch %s, PR FAILED: %v\n", branch, err)
 			continue

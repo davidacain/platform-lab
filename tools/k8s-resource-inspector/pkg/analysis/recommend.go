@@ -28,7 +28,8 @@ type ResourceValues struct {
 
 // Recommend generates a recommendation based on behavior, confidence, and usage metrics.
 // threshold is the minimum confidence required to emit a recommendation (0.0–1.0).
-func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity) Recommendation {
+// minCPUMillis and minMemMi are the floor values for recommendations.
+func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity, minCPUMillis, minMemMi int64) Recommendation {
 	if !u.HasData {
 		return Recommendation{Hold: true, HoldReason: "no data"}
 	}
@@ -39,7 +40,7 @@ func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.
 
 	switch behavior {
 	case BehaviorStatic:
-		return recommendStatic(u, cpuReq, cpuLim, memReq, memLim)
+		return recommendStatic(u, cpuReq, cpuLim, memReq, memLim, minCPUMillis, minMemMi)
 	case BehaviorRunaway:
 		return recommendRunaway(u, memLim)
 	case BehaviorSpiky:
@@ -55,27 +56,27 @@ func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.
 
 // recommendStatic suggests reducing requests toward p99 + headroom.
 // When requests == limits (Guaranteed QoS), both are updated together.
-func recommendStatic(u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity) Recommendation {
+func recommendStatic(u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity, minCPUMillis, minMemMi int64) Recommendation {
 	var parts []string
 
-	// CPU: p99 + 20% headroom, rounded up to nearest 10m, minimum 10m.
+	// CPU: p99 + 20% headroom, rounded up to nearest 10m, floored at minCPUMillis.
 	recCPUMillis := int64(math.Ceil(u.CPUP99 * 1200)) // cores * 1000m/core * 1.2 headroom
 	recCPUMillis = roundUpTo(recCPUMillis, 10)
-	if recCPUMillis < 10 {
-		recCPUMillis = 10
+	if recCPUMillis < minCPUMillis {
+		recCPUMillis = minCPUMillis
 	}
 	cpuChanged := significantDiff(float64(recCPUMillis), float64(cpuReq.MilliValue()))
 	if cpuChanged {
 		parts = append(parts, fmt.Sprintf("CPU %s -> %dm", cpuReq.String(), recCPUMillis))
 	}
 
-	// Memory: p99 + 30% headroom, rounded up to nearest Mi, minimum 16Mi.
+	// Memory: p99 + 30% headroom, rounded up to nearest Mi, floored at minMemMi.
 	var recMemMi int64
 	memChanged := false
 	if u.MemP99 > 0 {
 		recMemMi = int64(math.Ceil(u.MemP99 * 1.3 / 1048576))
-		if recMemMi < 16 {
-			recMemMi = 16
+		if recMemMi < minMemMi {
+			recMemMi = minMemMi
 		}
 		curMemMi := memReq.Value() / 1048576
 		memChanged = significantDiff(float64(recMemMi), float64(curMemMi))

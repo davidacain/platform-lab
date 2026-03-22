@@ -9,12 +9,90 @@ import (
 )
 
 type Config struct {
-	Clusters []ClusterConfig `yaml:"clusters"`
+	Clusters       []ClusterConfig `yaml:"clusters"`
+	Minimums       Minimums        `yaml:"minimums"`
+	ArgoCDNamespace string         `yaml:"argocd_namespace"`
+	Git            GitConfig       `yaml:"git"`
+	GitHub         GitHubConfig    `yaml:"github"`
+}
+
+// GitConfig holds committer identity for kri-authored commits.
+type GitConfig struct {
+	AuthorName  string `yaml:"author_name"`
+	AuthorEmail string `yaml:"author_email"`
+}
+
+// GitHubConfig holds GitHub-specific settings.
+type GitHubConfig struct {
+	BaseBranch string `yaml:"base_branch"` // default "main"
+	APIURL     string `yaml:"api_url"`     // default "https://api.github.com"
 }
 
 type ClusterConfig struct {
 	ArgoCDCluster string `yaml:"argocd_cluster"`
 	Prometheus    string `yaml:"prometheus"`
+}
+
+// Minimums defines floor values for resource recommendations.
+type Minimums struct {
+	CPUMillis int64  `yaml:"cpu_millicores"` // default 10
+	MemoryMi  int64  `yaml:"memory_mi"`      // default 16
+}
+
+// MinCPUMillis returns the configured minimum CPU in millicores, or 10 if unset.
+func (c *Config) MinCPUMillis() int64 {
+	if c.Minimums.CPUMillis > 0 {
+		return c.Minimums.CPUMillis
+	}
+	return 10
+}
+
+// MinMemoryMi returns the configured minimum memory in Mi, or 16 if unset.
+func (c *Config) MinMemoryMi() int64 {
+	if c.Minimums.MemoryMi > 0 {
+		return c.Minimums.MemoryMi
+	}
+	return 16
+}
+
+// ArgoNS returns the configured ArgoCD namespace, or "argocd" if unset.
+func (c *Config) ArgoNS() string {
+	if c.ArgoCDNamespace != "" {
+		return c.ArgoCDNamespace
+	}
+	return "argocd"
+}
+
+// GitAuthorName returns the configured git author name, or "kri" if unset.
+func (c *Config) GitAuthorName() string {
+	if c.Git.AuthorName != "" {
+		return c.Git.AuthorName
+	}
+	return "kri"
+}
+
+// GitAuthorEmail returns the configured git author email, or "kri@noreply.local" if unset.
+func (c *Config) GitAuthorEmail() string {
+	if c.Git.AuthorEmail != "" {
+		return c.Git.AuthorEmail
+	}
+	return "kri@noreply.local"
+}
+
+// BaseBranch returns the configured PR base branch, or "main" if unset.
+func (c *Config) BaseBranch() string {
+	if c.GitHub.BaseBranch != "" {
+		return c.GitHub.BaseBranch
+	}
+	return "main"
+}
+
+// GitHubAPIURL returns the configured GitHub API URL, or the public GitHub URL if unset.
+func (c *Config) GitHubAPIURL() string {
+	if c.GitHub.APIURL != "" {
+		return c.GitHub.APIURL
+	}
+	return "https://api.github.com"
 }
 
 // Load reads the kri config file. If path is empty, defaults to ~/.kri/config.yaml.

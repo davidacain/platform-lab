@@ -44,7 +44,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build kubernetes client: %w", err)
 	}
 
-	apps, err := listApps(ctx, dynClient)
+	apps, err := listApps(ctx, dynClient, cfg.ArgoNS())
 	if err != nil {
 		return err
 	}
@@ -106,8 +106,8 @@ func hasFinding(r output.PodRow) bool {
 }
 
 // listApps fetches and filters ArgoCD applications.
-func listApps(ctx context.Context, dynClient dynamic.Interface) ([]argo.App, error) {
-	apps, err := argo.List(ctx, dynClient, "argocd")
+func listApps(ctx context.Context, dynClient dynamic.Interface, argoNS string) ([]argo.App, error) {
+	apps, err := argo.List(ctx, dynClient, argoNS)
 	if err != nil {
 		return nil, fmt.Errorf("list ArgoCD applications: %w", err)
 	}

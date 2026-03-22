@@ -19,6 +19,8 @@ import (
 // buildRows runs the full inspect pipeline and returns one PodRow per container.
 // Rows are unsorted and unfiltered — callers apply their own sort/filter.
 func buildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interface, apps []argo.App, window string, confidenceThreshold float64) ([]output.PodRow, error) {
+	minCPU := cfg.MinCPUMillis()
+	minMem := cfg.MinMemoryMi()
 	var rows []output.PodRow
 
 	for _, app := range apps {
@@ -75,8 +77,9 @@ func buildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 				AppName:   app.Name,
 				Cluster:   app.DestinationName,
 				Namespace: p.Namespace,
-				PodName:   p.PodName,
-				Container: p.ContainerName,
+				PodName:      p.PodName,
+				WorkloadName: p.WorkloadName,
+				Container:    p.ContainerName,
 				CPUReq:    p.CPURequest,
 				CPULim:    p.CPULimit,
 				MemReq:    p.MemRequest,
@@ -103,7 +106,7 @@ func buildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 				row.Behavior = behavior
 				row.Confidence = confidence
 				row.HPAStatus = hpa.Validate(appHPA, u, p.CPURequest, p.MemRequest, behavior)
-				row.Recommendation = analysis.Recommend(behavior, confidence, confidenceThreshold, u, p.CPURequest, p.CPULimit, p.MemRequest, p.MemLimit)
+				row.Recommendation = analysis.Recommend(behavior, confidence, confidenceThreshold, u, p.CPURequest, p.CPULimit, p.MemRequest, p.MemLimit, minCPU, minMem)
 
 				if gitConfig != nil && !row.Recommendation.Hold && row.Recommendation.Text != "" {
 					row.ValuesFilePath = gitConfig.FilePath

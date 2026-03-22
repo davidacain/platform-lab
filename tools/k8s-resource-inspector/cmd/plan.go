@@ -10,6 +10,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var planDir string
+
 var planCmd = &cobra.Command{
 	Use:   "plan",
 	Short: "Generate kri-plan.yaml with recommended resource changes",
@@ -22,6 +24,7 @@ set apply: false to skip an app, then run: kri apply`,
 func init() {
 	planCmd.Flags().StringVar(&window, "window", "7d", "Observation window for Prometheus queries (e.g. 7d, 24h, 1h)")
 	planCmd.Flags().Float64Var(&confidenceThreshold, "confidence", 0.8, "Minimum confidence threshold for recommendations (0.0–1.0)")
+	planCmd.Flags().StringVar(&planDir, "dir", "", "Directory to write kri-plan.yaml (default: current directory)")
 	rootCmd.AddCommand(planCmd)
 }
 
@@ -38,7 +41,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build kubernetes client: %w", err)
 	}
 
-	apps, err := listApps(ctx, dynClient)
+	apps, err := listApps(ctx, dynClient, cfg.ArgoNS())
 	if err != nil {
 		return err
 	}
@@ -59,6 +62,6 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return a.Container < b.Container
 	})
 
-	plans := plan.Build(rows)
-	return plan.Write(plans)
+	plans := plan.Build(rows, window)
+	return plan.Write(plans, planDir)
 }
