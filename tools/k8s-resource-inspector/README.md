@@ -85,10 +85,12 @@ kri apply --all --dry-run
 kri plan [flags]
   --window string     Observation window (default "7d")
   --confidence float  Confidence threshold (default 0.8)
+  --dir string        Directory to write kri-plan.yaml (default: current directory)
 
 kri apply [flags]
   --all               Run inspect pipeline instead of reading kri-plan.yaml
   --dry-run           Show what would be applied without opening PRs
+  --dir string        Directory to read kri-plan.yaml from (default: current directory)
   --window string     Observation window (only with --all, default "7d")
   --confidence float  Confidence threshold (only with --all, default 0.8)
 ```
@@ -169,7 +171,7 @@ Rows flagged with `WARN`/`ERROR` in HPA or `YES` in REC are expanded in the **Fi
 Classification thresholds:
 - **RUNAWAY**: mem p99 ≥ 90% of limit
 - **SPIKY**: CPU p99/p50 ≥ 2.0 or mem p99/p50 ≥ 1.8
-- **GROWTH**: trend > 1% of mem p50/hr AND mem p99 ≥ 30% of limit (pods well within their limit are STATIC even with a small trend, to avoid noise)
+- **GROWTH**: trend > 1% of mem p50/hr AND mem p99 ≥ 30% of limit (pods well within their limit are not classified GROWTH, to avoid trend noise on idle workloads)
 - **STATIC**: CPU p99/p50 < 1.5 AND mem p99/p50 < 1.3 AND flat trend
 
 Recommendations add headroom above observed p99: **+20% for CPU** (rounded up to nearest 10m), **+30% for memory** (rounded up to nearest Mi). A change is only emitted when the recommended value differs from the current request by more than 10%.
