@@ -5,9 +5,9 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/dcain/platform-lab/pkg/client"
-	"github.com/dcain/platform-lab/tools/pod-security-inspector/pkg/netpol"
-	"github.com/dcain/platform-lab/tools/pod-security-inspector/pkg/output"
+	"github.com/davidacain/platform-lab/pkg/client"
+	"github.com/davidacain/platform-lab/tools/pod-security-inspector/pkg/netpol"
+	"github.com/davidacain/platform-lab/tools/pod-security-inspector/pkg/output"
 )
 
 var netpolCmd = &cobra.Command{

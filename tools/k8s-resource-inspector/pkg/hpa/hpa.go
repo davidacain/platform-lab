@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/metrics"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"

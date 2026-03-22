@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/dcain/platform-lab/tools/helm-version-check/pkg/config"
+	"github.com/davidacain/platform-lab/tools/helm-version-check/pkg/config"
 )
 
 const testIndex = `

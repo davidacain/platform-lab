@@ -3,7 +3,7 @@ package analysis
 import (
 	"math"
 
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/metrics"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/metrics"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -42,14 +42,20 @@ func ClassifyPod(u metrics.Usage, memLim resource.Quantity) (BehaviorClass, floa
 		return BehaviorSpiky, 0.85
 	}
 
-	// GROWTH: memory trend > 1% of p50 per hour.
+	// GROWTH: memory trend > 1% of p50 per hour. When a memory limit is set,
+	// also require that p99 is already above 30% of the limit — pods well within
+	// their limit have enough headroom that trend noise is not actionable.
 	trendThreshold := u.MemP50 * 0.01
-	if u.MemP50 > 0 && u.MemTrend > trendThreshold {
+	trendSignificant := u.MemP50 > 0 && u.MemTrend > trendThreshold
+	if trendSignificant && memLimBytes > 0 {
+		trendSignificant = u.MemP99/memLimBytes >= 0.30
+	}
+	if trendSignificant {
 		return BehaviorGrowth, 0.75
 	}
 
 	// STATIC: low variance and flat trend.
-	trendFlat := u.MemP50 == 0 || math.Abs(u.MemTrend) <= trendThreshold
+	trendFlat := u.MemP50 == 0 || math.Abs(u.MemTrend) <= trendThreshold || !trendSignificant
 	if cpuRatio < 1.5 && memRatio < 1.3 && trendFlat {
 		return BehaviorStatic, 0.9
 	}

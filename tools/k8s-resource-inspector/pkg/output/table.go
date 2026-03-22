@@ -5,8 +5,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/hpa"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/hpa"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -25,12 +25,12 @@ type PodRow struct {
 	MemLim resource.Quantity
 
 	// Usage percentiles (from Prometheus)
-	CPUP50  float64
-	CPUP95  float64
-	CPUP99  float64
-	MemP50  float64
-	MemP95  float64
-	MemP99  float64
+	CPUP50   float64
+	CPUP95   float64
+	CPUP99   float64
+	MemP50   float64
+	MemP95   float64
+	MemP99   float64
 	MemTrend float64 // bytes/hour
 	HasData  bool
 
@@ -46,6 +46,10 @@ type PodRow struct {
 
 	// Values file path from git (Phase 6)
 	ValuesFilePath string
+
+	// Source repo info (Phase 8 / plan)
+	RepoURL   string
+	ChartPath string
 }
 
 func PrintTable(rows []PodRow) error {
@@ -73,12 +77,78 @@ func PrintTable(rows []PodRow) error {
 			memLimRatio(r.MemP99, r.MemLim),
 			behaviorOrDash(r.Behavior),
 			confOrDash(r.Confidence),
-			hpaStatus(r.HPAStatus),
-			recText(r.Recommendation, r.ValuesFilePath),
+			hpaFlag(r.HPAStatus),
+			recFlag(r.Recommendation),
 		)
 	}
 
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+
+	printFindings(rows)
+	return nil
+}
+
+// printFindings prints a findings block below the table for any flagged rows.
+func printFindings(rows []PodRow) {
+	type finding struct {
+		label string
+		lines []string
+	}
+
+	var sections []struct {
+		header   string
+		findings []finding
+	}
+
+	for _, r := range rows {
+		var ff []finding
+
+		if r.HPAStatus.Status == "WARN" || r.HPAStatus.Status == "ERROR" {
+			var lines []string
+			for _, f := range r.HPAStatus.Findings {
+				lines = append(lines, fmt.Sprintf("[%s] %s", f.Severity, f.Message))
+			}
+			ff = append(ff, finding{"HPA", lines})
+		}
+
+		if r.Recommendation.Text != "" && r.Recommendation.Text != "within tolerance" && !r.Recommendation.Hold {
+			text := r.Recommendation.Text
+			if r.ValuesFilePath != "" {
+				text += fmt.Sprintf("  [%s]", r.ValuesFilePath)
+			}
+			ff = append(ff, finding{"REC", []string{text}})
+		} else if r.Recommendation.Hold && r.Recommendation.HoldReason != "" {
+			ff = append(ff, finding{"REC", []string{"hold: " + r.Recommendation.HoldReason}})
+		}
+
+		if len(ff) > 0 {
+			sections = append(sections, struct {
+				header   string
+				findings []finding
+			}{
+				header:   fmt.Sprintf("%s / %s / %s / %s", r.AppName, r.Namespace, r.PodName, r.Container),
+				findings: ff,
+			})
+		}
+	}
+
+	if len(sections) == 0 {
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("── Findings ──────────────────────────────────────────────────────")
+	for _, s := range sections {
+		fmt.Printf("\n  %s\n", s.header)
+		for _, f := range s.findings {
+			for _, line := range f.lines {
+				fmt.Printf("    %-4s  %s\n", f.label, line)
+			}
+		}
+	}
+	fmt.Println()
 }
 
 func qOrDash(q resource.Quantity) string {
@@ -128,32 +198,26 @@ func confOrDash(c float64) string {
 	return fmt.Sprintf("%.0f%%", c*100)
 }
 
-func recText(r analysis.Recommendation, valuesFile string) string {
+// hpaFlag returns a compact status indicator for the HPA column.
+func hpaFlag(v hpa.Validation) string {
+	switch v.Status {
+	case "NONE", "":
+		return "-"
+	default:
+		return v.Status
+	}
+}
+
+// recFlag returns a compact indicator for the REC column.
+func recFlag(r analysis.Recommendation) string {
 	if r.Hold {
-		if r.HoldReason != "" {
-			return "hold: " + r.HoldReason
-		}
 		return "hold"
 	}
 	if r.Text == "" {
 		return "-"
 	}
-	if valuesFile != "" {
-		return fmt.Sprintf("%s  [%s]", r.Text, valuesFile)
+	if r.Text == "within tolerance" {
+		return "ok"
 	}
-	return r.Text
-}
-
-func hpaStatus(v hpa.Validation) string {
-	switch v.Status {
-	case "NONE", "":
-		return "-"
-	case "OK":
-		return "OK"
-	default:
-		if len(v.Findings) > 0 {
-			return fmt.Sprintf("%s: %s", v.Status, v.Findings[0].Message)
-		}
-		return v.Status
-	}
+	return "YES"
 }

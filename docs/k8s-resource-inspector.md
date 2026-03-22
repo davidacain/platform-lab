@@ -5,7 +5,7 @@
 **Status:** Not started
 **Priority:** Second — builds on pod-security-inspector client-go foundation
 **Binary:** `kri`
-**Repo:** github.com/dcain/platform-lab/tools/k8s-resource-inspector
+**Repo:** github.com/davidacain/platform-lab/tools/k8s-resource-inspector
 
 ---
 

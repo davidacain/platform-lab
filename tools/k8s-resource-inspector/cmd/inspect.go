@@ -3,16 +3,12 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
+	"sort"
 
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/argo"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/config"
-	gitvals "github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/git"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/hpa"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/metrics"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/output"
-	"github.com/dcain/platform-lab/tools/k8s-resource-inspector/pkg/pods"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/argo"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/config"
+	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/output"
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/tools/clientcmd"
@@ -20,6 +16,7 @@ import (
 
 var window string
 var confidenceThreshold float64
+var findingsOnly bool
 
 var inspectCmd = &cobra.Command{
 	Use:   "inspect",
@@ -30,6 +27,7 @@ var inspectCmd = &cobra.Command{
 func init() {
 	inspectCmd.Flags().StringVar(&window, "window", "7d", "Observation window for Prometheus queries (e.g. 7d, 24h, 1h)")
 	inspectCmd.Flags().Float64Var(&confidenceThreshold, "confidence", 0.8, "Minimum confidence threshold for recommendations (0.0–1.0)")
+	inspectCmd.Flags().BoolVar(&findingsOnly, "findings-only", false, "Only show workloads with recommendations or HPA warnings")
 	rootCmd.AddCommand(inspectCmd)
 }
 
@@ -46,14 +44,77 @@ func runInspect(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("build kubernetes client: %w", err)
 	}
 
+	apps, err := listApps(ctx, dynClient)
+	if err != nil {
+		return err
+	}
+	if len(apps) == 0 {
+		return nil
+	}
+
+	rows, err := buildRows(ctx, cfg, dynClient, apps, window, confidenceThreshold)
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.AppName != b.AppName {
+			return a.AppName < b.AppName
+		}
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		if a.PodName != b.PodName {
+			return a.PodName < b.PodName
+		}
+		return a.Container < b.Container
+	})
+
+	if findingsOnly {
+		filtered := rows[:0]
+		for _, r := range rows {
+			if hasFinding(r) {
+				filtered = append(filtered, r)
+			}
+		}
+		rows = filtered
+		if len(rows) == 0 {
+			fmt.Println("No findings.")
+			return nil
+		}
+	}
+
+	if outputFmt == "json" {
+		return output.PrintJSON(rows)
+	}
+	return output.PrintTable(rows)
+}
+
+// hasFinding returns true when a row warrants attention.
+func hasFinding(r output.PodRow) bool {
+	if r.HPAStatus.Status == "WARN" || r.HPAStatus.Status == "ERROR" {
+		return true
+	}
+	if !r.Recommendation.Hold && r.Recommendation.Text != "" && r.Recommendation.Text != "within tolerance" {
+		return true
+	}
+	if r.Behavior == analysis.BehaviorRunaway || r.Behavior == analysis.BehaviorSpiky {
+		return true
+	}
+	return false
+}
+
+// listApps fetches and filters ArgoCD applications.
+func listApps(ctx context.Context, dynClient dynamic.Interface) ([]argo.App, error) {
 	apps, err := argo.List(ctx, dynClient, "argocd")
 	if err != nil {
-		return fmt.Errorf("list ArgoCD applications: %w", err)
+		return nil, fmt.Errorf("list ArgoCD applications: %w", err)
 	}
 
 	if len(apps) == 0 {
 		fmt.Println("No ArgoCD applications found.")
-		return nil
+		return nil, nil
 	}
 
 	if appFilter != "" {
@@ -78,133 +139,10 @@ func runInspect(cmd *cobra.Command, args []string) error {
 
 	if len(apps) == 0 {
 		fmt.Println("No applications match the specified filters.")
-		return nil
+		return nil, nil
 	}
 
-	var rows []output.PodRow
-
-	for _, app := range apps {
-		promURL, ok := cfg.PrometheusFor(app.DestinationName)
-		if !ok {
-			fmt.Fprintf(os.Stderr, "warn: no Prometheus configured for cluster %q (app %s), skipping\n",
-				app.DestinationName, app.Name)
-			continue
-		}
-
-		lister, err := pods.NewPromLister(promURL)
-		if err != nil {
-			return fmt.Errorf("create pod lister for app %s: %w", app.Name, err)
-		}
-
-		podList, err := lister.ListPods(ctx, app.Namespace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warn: list pods for app %s: %v\n", app.Name, err)
-			continue
-		}
-
-		metricsClient, err := metrics.NewClient(promURL)
-		if err != nil {
-			return fmt.Errorf("create metrics client for app %s: %w", app.Name, err)
-		}
-
-		usageMap, err := metricsClient.UsageMetrics(ctx, app.Namespace, window)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warn: fetch usage metrics for app %s: %v\n", app.Name, err)
-		}
-
-		// Read Helm values from git to get the configured resource values and file path.
-		var gitConfig *gitvals.ValuesConfig
-		if app.RepoURL != "" && len(app.ValueFiles) > 0 {
-			gitConfig, err = gitvals.ReadValues(app.RepoURL, app.TargetRevision, app.Path, app.ValueFiles[0])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "warn: read git values for app %s: %v\n", app.Name, err)
-			}
-		}
-
-		// Fetch HPAs for this namespace — used to join to pods by scaleTargetRef.
-		hpas, err := hpa.List(ctx, dynClient, app.Namespace)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warn: list HPAs for app %s: %v\n", app.Name, err)
-		}
-		appHPA := hpa.FindForTarget(hpas, app.Name)
-
-		// Classify each pod and collect behaviors for workload-level aggregation.
-		type podWithBehavior struct {
-			row      output.PodRow
-			behavior analysis.BehaviorClass
-		}
-		var appPods []podWithBehavior
-
-		for _, p := range podList {
-			row := output.PodRow{
-				AppName:   app.Name,
-				Cluster:   app.DestinationName,
-				Namespace: p.Namespace,
-				PodName:   p.PodName,
-				Container: p.ContainerName,
-				CPUReq:    p.CPURequest,
-				CPULim:    p.CPULimit,
-				MemReq:    p.MemRequest,
-				MemLim:    p.MemLimit,
-			}
-
-			if u, ok := usageMap[metrics.ContainerKey{
-				Namespace: p.Namespace,
-				Pod:       p.PodName,
-				Container: p.ContainerName,
-			}]; ok {
-				row.HasData = u.HasData
-				row.CPUP50 = u.CPUP50
-				row.CPUP95 = u.CPUP95
-				row.CPUP99 = u.CPUP99
-				row.MemP50 = u.MemP50
-				row.MemP95 = u.MemP95
-				row.MemP99 = u.MemP99
-				row.MemTrend = u.MemTrend
-
-				behavior, confidence := analysis.ClassifyPod(u, p.MemLimit)
-				row.Behavior = behavior
-				row.Confidence = confidence
-				row.HPAStatus = hpa.Validate(appHPA, u, p.CPURequest, p.MemRequest, behavior)
-				row.Recommendation = analysis.Recommend(behavior, confidence, confidenceThreshold, u, p.CPURequest, p.MemRequest, p.MemLimit)
-
-				// Annotate recommendation with the values file path when available.
-				if gitConfig != nil && !row.Recommendation.Hold && row.Recommendation.Text != "" {
-					row.ValuesFilePath = gitConfig.FilePath
-				}
-			} else {
-				row.Behavior = analysis.BehaviorUnknown
-				row.HPAStatus = hpa.Validate(appHPA, metrics.Usage{}, p.CPURequest, p.MemRequest, analysis.BehaviorUnknown)
-			}
-
-			appPods = append(appPods, podWithBehavior{row: row, behavior: row.Behavior})
-		}
-
-		// Workload-level MIXED detection: if pods in this app disagree, override
-		// both behavior and recommendation for all pods in the workload.
-		if len(appPods) > 1 {
-			behaviors := make([]analysis.BehaviorClass, len(appPods))
-			for i, p := range appPods {
-				behaviors[i] = p.behavior
-			}
-			workloadBehavior, _ := analysis.ClassifyWorkload(behaviors)
-			if workloadBehavior == analysis.BehaviorMixed {
-				for i := range appPods {
-					appPods[i].row.Behavior = analysis.BehaviorMixed
-					appPods[i].row.Recommendation = analysis.Recommendation{
-						Hold:       true,
-						HoldReason: "MIXED — investigate pod divergence first",
-					}
-				}
-			}
-		}
-
-		for _, p := range appPods {
-			rows = append(rows, p.row)
-		}
-	}
-
-	return output.PrintTable(rows)
+	return apps, nil
 }
 
 func buildDynamicClient(kubeconfigPath, kubeCtx string) (dynamic.Interface, error) {
