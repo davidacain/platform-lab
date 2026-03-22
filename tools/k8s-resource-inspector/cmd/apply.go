@@ -3,9 +3,10 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
-	"sort"
+	"path"
 	"strings"
 
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/config"
@@ -119,19 +120,7 @@ func buildPlansFromInspect(cfg *config.Config) ([]plan.AppPlan, error) {
 		return nil, err
 	}
 
-	sort.Slice(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if a.AppName != b.AppName {
-			return a.AppName < b.AppName
-		}
-		if a.Namespace != b.Namespace {
-			return a.Namespace < b.Namespace
-		}
-		if a.PodName != b.PodName {
-			return a.PodName < b.PodName
-		}
-		return a.Container < b.Container
-	})
+	sortRows(rows)
 
 	// Print the full table so the user sees what's driving the recommendations.
 	if err := output.PrintTable(rows); err != nil {
@@ -155,19 +144,25 @@ func printApplySummary(plans []plan.AppPlan) {
 }
 
 func openPRs(token string, plans []plan.AppPlan, cfg *config.Config) error {
+	cache := gitops.NewRepoCache(token)
+	defer cache.Close()
+
+	var errs []error
 	for _, p := range plans {
 		fmt.Printf("  %s  ", p.App)
 
-		chartPath := p.ValuesFile[:strings.LastIndex(p.ValuesFile, "/")]
-		branch, err := gitops.PushValuesFile(p.Repo, token, p.App, chartPath, p.Containers, cfg.GitAuthorName(), cfg.GitAuthorEmail())
+		chartPath := path.Dir(p.ValuesFile)
+		branch, err := gitops.PushValuesFile(cache, p.Repo, p.App, chartPath, p.Containers, cfg.GitAuthorName(), cfg.GitAuthorEmail())
 		if err != nil {
 			fmt.Printf("FAILED: %v\n", err)
+			errs = append(errs, fmt.Errorf("%s: push: %w", p.App, err))
 			continue
 		}
 
 		prURL, created, err := github.EnsurePR(token, p.Repo, branch, p, cfg.BaseBranch(), cfg.GitHubAPIURL())
 		if err != nil {
 			fmt.Printf("pushed branch %s, PR FAILED: %v\n", branch, err)
+			errs = append(errs, fmt.Errorf("%s: PR: %w", p.App, err))
 			continue
 		}
 
@@ -177,7 +172,7 @@ func openPRs(token string, plans []plan.AppPlan, cfg *config.Config) error {
 			fmt.Printf("PR already open: %s\n", prURL)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func confirm(prompt string) bool {

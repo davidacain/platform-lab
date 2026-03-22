@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/config"
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/plan"
@@ -54,13 +53,7 @@ func runPlan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	sort.Slice(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if a.AppName != b.AppName {
-			return a.AppName < b.AppName
-		}
-		return a.Container < b.Container
-	})
+	sortRows(rows)
 
 	plans := plan.Build(rows, window)
 	return plan.Write(plans, planDir)

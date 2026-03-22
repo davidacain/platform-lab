@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/argo"
@@ -57,19 +56,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	sort.Slice(rows, func(i, j int) bool {
-		a, b := rows[i], rows[j]
-		if a.AppName != b.AppName {
-			return a.AppName < b.AppName
-		}
-		if a.Namespace != b.Namespace {
-			return a.Namespace < b.Namespace
-		}
-		if a.PodName != b.PodName {
-			return a.PodName < b.PodName
-		}
-		return a.Container < b.Container
-	})
+	sortRows(rows)
 
 	if findingsOnly {
 		filtered := rows[:0]
@@ -96,7 +83,7 @@ func hasFinding(r output.PodRow) bool {
 	if r.HPAStatus.Status == "WARN" || r.HPAStatus.Status == "ERROR" {
 		return true
 	}
-	if !r.Recommendation.Hold && r.Recommendation.Text != "" && r.Recommendation.Text != "within tolerance" {
+	if r.Recommendation.IsActionable {
 		return true
 	}
 	if r.Behavior == analysis.BehaviorRunaway || r.Behavior == analysis.BehaviorSpiky {
