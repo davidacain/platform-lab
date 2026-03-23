@@ -9,12 +9,48 @@ import (
 )
 
 type Config struct {
-	Clusters        []ClusterConfig `yaml:"clusters"`
-	Minimums        Minimums        `yaml:"minimums"`
-	ArgoCDNamespace string          `yaml:"argocd_namespace"`
-	Git             GitConfig       `yaml:"git"`
-	GitHub          GitHubConfig    `yaml:"github"`
-	Operator        OperatorConfig  `yaml:"operator"`
+	Clusters        []ClusterConfig     `yaml:"clusters"`
+	Minimums        Minimums            `yaml:"minimums"`
+	ArgoCDNamespace string              `yaml:"argocd_namespace"`
+	Git             GitConfig           `yaml:"git"`
+	GitHub          GitHubConfig        `yaml:"github"`
+	Coralogix       CoralogixConfig     `yaml:"coralogix"`
+	Notifications   NotificationsConfig `yaml:"notifications"`
+	Operator        OperatorConfig      `yaml:"operator"`
+}
+
+// CoralogixConfig holds Coralogix log query settings.
+type CoralogixConfig struct {
+	// APIKey is the Coralogix API key. Typically injected via ${CORALOGIX_API_KEY}.
+	APIKey string `yaml:"api_key"`
+
+	// Endpoint is the Coralogix DataPrime query endpoint (e.g. https://api.coralogix.us/api/v1/dataprime/query).
+	Endpoint string `yaml:"endpoint"`
+
+	// AppNameField is the log attribute used to match ArgoCD app names
+	// (e.g. "resource.attributes.k8s_deployment_name"). Set to "" to query by pod name instead.
+	AppNameField string `yaml:"app_name_field"`
+
+	// AppNameSuffixes lists environment suffixes to strip from ArgoCD app names
+	// to derive the Deployment name (e.g. ["-prod", "-staging", "-dev"]).
+	AppNameSuffixes []string `yaml:"app_name_suffixes"`
+
+	// SeverityFilter lists log severities to retrieve for diagnosis (e.g. ["ERROR", "CRITICAL"]).
+	SeverityFilter []string `yaml:"severity_filter"`
+
+	// LogWindowSecs is the number of seconds after the probe failure timestamp to include in the query window.
+	LogWindowSecs int `yaml:"log_window_seconds"`
+}
+
+// SlackConfig holds Slack notification settings.
+type SlackConfig struct {
+	WebhookURL string `yaml:"webhook_url"`
+	Channel    string `yaml:"channel"`
+}
+
+// NotificationsConfig holds notification channel settings.
+type NotificationsConfig struct {
+	Slack SlackConfig `yaml:"slack"`
 }
 
 // GitConfig holds committer identity for kri-authored commits.
