@@ -30,7 +30,6 @@ tools/
   helm-version-check/  # hvc — compares deployed Helm releases to upstream
   pod-security-inspector/  # psi — audits pod security, mesh, and network policy
   k8s-resource-inspector/  # kri — right-sizes workloads and opens PRs with recommendations
-  kri-operator/      # kri-operator — runs kri on a schedule as a Kubernetes operator
 ```
 
 ## General conventions
