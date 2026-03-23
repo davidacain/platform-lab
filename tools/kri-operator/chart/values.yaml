@@ -1,0 +1,42 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/davidacain/kri-operator
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+# kri config file content. Mounted as /etc/kri/config.yaml.
+# Set clusters, argocd_namespace, minimums, git, github, and operator sections here.
+config: |
+  clusters: []
+  argocd_namespace: argocd
+  operator:
+    requeue_interval: 6h
+
+# GitHub token for opening PRs. Set via --set githubToken=... or use an
+# external secret and patch the deployment yourself.
+githubToken: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 50m
+    memory: 64Mi
+
+serviceAccount:
+  name: kri-operator
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  runAsNonRoot: true
+  runAsUser: 65532
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault

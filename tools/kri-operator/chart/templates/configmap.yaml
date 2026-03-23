@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kri-operator-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kri-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  config.yaml: |
+{{ .Values.config | indent 4 }}

@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kri-operator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: kri-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kri-operator
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kri-operator
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext: {{ toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: kri-operator
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config=/etc/kri/config.yaml
+            - --health-probe-bind-address=:8081
+          securityContext: {{ toYaml .Values.securityContext | nindent 12 }}
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          env:
+            {{- if .Values.githubToken }}
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: kri-operator-github
+                  key: token
+            {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/kri
+              readOnly: true
+            # os.MkdirTemp writes to /tmp; required when readOnlyRootFilesystem is true.
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: config
+          configMap:
+            name: kri-operator-config
+        - name: tmp
+          emptyDir: {}

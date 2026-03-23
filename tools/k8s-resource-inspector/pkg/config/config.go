@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Clusters       []ClusterConfig `yaml:"clusters"`
-	Minimums       Minimums        `yaml:"minimums"`
-	ArgoCDNamespace string         `yaml:"argocd_namespace"`
-	Git            GitConfig       `yaml:"git"`
-	GitHub         GitHubConfig    `yaml:"github"`
+	Clusters        []ClusterConfig `yaml:"clusters"`
+	Minimums        Minimums        `yaml:"minimums"`
+	ArgoCDNamespace string          `yaml:"argocd_namespace"`
+	Git             GitConfig       `yaml:"git"`
+	GitHub          GitHubConfig    `yaml:"github"`
+	Operator        OperatorConfig  `yaml:"operator"`
 }
 
 // GitConfig holds committer identity for kri-authored commits.
@@ -93,6 +94,24 @@ func (c *Config) GitHubAPIURL() string {
 		return c.GitHub.APIURL
 	}
 	return "https://api.github.com"
+}
+
+// OperatorConfig holds kri-operator-specific settings, nested under the
+// "operator" key in the shared config file.
+type OperatorConfig struct {
+	// RequeueInterval is how often the operator re-runs the full inspection
+	// loop (e.g. "6h"). Defaults to "6h" if unset.
+	RequeueInterval string `yaml:"requeue_interval"`
+
+	// DiagnosisCooldown is the minimum time between successive annotation
+	// updates for the same app (e.g. "1h"). Defaults to "1h" if unset.
+	DiagnosisCooldown string `yaml:"diagnosis_cooldown"`
+
+	// IgnoreApps lists ArgoCD Application names the operator should skip.
+	IgnoreApps []string `yaml:"ignore_apps"`
+
+	// IgnoreNamespaces lists namespaces the operator should skip.
+	IgnoreNamespaces []string `yaml:"ignore_namespaces"`
 }
 
 // Load reads the kri config file. If path is empty, defaults to ~/.kri/config.yaml.

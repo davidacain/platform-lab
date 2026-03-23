@@ -1,0 +1,40 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Values.serviceAccount.name }}
+  labels:
+    app.kubernetes.io/name: kri-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+rules:
+  # Read and annotate ArgoCD Application CRs.
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "patch"]
+  # List HPAs for HPA validation in the inspect pipeline.
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list"]
+  # Leader election — controller-runtime manages leases for HA.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create", "get", "list", "patch", "update", "delete"]
+  # Allow reading events (needed by controller-runtime event recorder).
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Values.serviceAccount.name }}
+  labels:
+    app.kubernetes.io/name: kri-operator
+    app.kubernetes.io/instance: {{ .Release.Name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Values.serviceAccount.name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}
+    namespace: {{ .Release.Namespace }}
