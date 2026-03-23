@@ -198,9 +198,6 @@ Recommendations add headroom above observed p99: **+20% for CPU** (rounded up to
 - **HPA config**: `autoscaling/v2` HorizontalPodAutoscaler resources via Kubernetes API
 - **Values files**: Helm values read directly from git via shallow clone
 
-## Roadmap
+## kri-operator
 
-Planned evolution into a Kubernetes operator:
-- **Ignore rules**: skip specific apps, workloads, or containers via ConfigMap or CRD
-- **Values key path mapping**: per-app annotation or CRD field for charts with non-standard values structure (e.g. `containers[].resources` vs top-level `resources`)
-- **Scheduling**: operator runs automatically on a defined interval
+kri logic is automated by [kri-operator](https://github.com/davidacain/kri-operator), a Kubernetes operator that runs the inspect → plan → apply workflow on a schedule and posts rollback diagnosis reports to Slack. The CLI remains fully functional as a developer and debug interface into the same underlying logic.

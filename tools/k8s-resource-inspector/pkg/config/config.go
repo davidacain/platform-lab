@@ -170,6 +170,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
+	cfg.Coralogix.APIKey = os.Expand(cfg.Coralogix.APIKey, os.Getenv)
+	cfg.Notifications.Slack.WebhookURL = os.Expand(cfg.Notifications.Slack.WebhookURL, os.Getenv)
+
 	return &cfg, nil
 }
 
