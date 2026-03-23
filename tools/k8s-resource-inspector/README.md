@@ -200,4 +200,4 @@ Recommendations add headroom above observed p99: **+20% for CPU** (rounded up to
 
 ## kri-operator
 
-kri logic is automated by [kri-operator](https://github.com/davidacain/kri-operator), a Kubernetes operator that runs the inspect → plan → apply workflow on a schedule and posts rollback diagnosis reports to Slack. The CLI remains fully functional as a developer and debug interface into the same underlying logic.
+kri logic is automated by kri-operator, a Kubernetes operator that runs the inspect → plan → apply workflow on a schedule and posts rollback diagnosis reports to Slack. The CLI remains fully functional as a developer and debug interface into the same underlying logic.
