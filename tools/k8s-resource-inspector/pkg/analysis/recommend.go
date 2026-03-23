@@ -18,6 +18,16 @@ type Recommendation struct {
 	Resources    *ResourceValues // structured values for plan generation; nil when held or within tolerance
 }
 
+// HPARecommendation holds a suggested HPA configuration for a workload.
+type HPARecommendation struct {
+	Text         string // human-readable summary
+	TargetCPU    *int32 // recommended CPU averageUtilization %, nil if memory should be targeted
+	TargetMemory *int32 // recommended memory averageUtilization %, nil if CPU should be targeted
+	MinReplicas  int32
+	Driver       string // "CPU" or "Memory"
+	Reason       string // "WontFire" or "Tuning"
+}
+
 // ResourceValues holds the final desired state for container resources.
 // Used by kri plan to generate values-resources.yaml.
 type ResourceValues struct {
@@ -29,8 +39,8 @@ type ResourceValues struct {
 
 // Recommend generates a recommendation based on behavior, confidence, and usage metrics.
 // threshold is the minimum confidence required to emit a recommendation (0.0–1.0).
-// minCPUMillis and minMemMi are the floor values for recommendations.
-func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity, minCPUMillis, minMemMi int64) Recommendation {
+// minCPUMillis/minMemMi are floor values; maxCPUMillis/maxMemMi are ceiling values (0 = no ceiling).
+func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity, minCPUMillis, minMemMi, maxCPUMillis, maxMemMi int64) Recommendation {
 	if !u.HasData {
 		return Recommendation{Hold: true, HoldReason: "no data"}
 	}
@@ -41,9 +51,9 @@ func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.
 
 	switch behavior {
 	case BehaviorStatic:
-		return recommendStatic(u, cpuReq, cpuLim, memReq, memLim, minCPUMillis, minMemMi)
+		return recommendStatic(u, cpuReq, cpuLim, memReq, memLim, minCPUMillis, minMemMi, maxCPUMillis, maxMemMi)
 	case BehaviorRunaway:
-		return recommendRunaway(u, memLim)
+		return recommendRunaway(u, memLim, maxMemMi)
 	case BehaviorSpiky:
 		return Recommendation{Hold: true, HoldReason: "SPIKY — monitor before rightsizing"}
 	case BehaviorGrowth:
@@ -57,27 +67,33 @@ func Recommend(behavior BehaviorClass, confidence, threshold float64, u metrics.
 
 // recommendStatic suggests reducing requests toward p99 + headroom.
 // When requests == limits (Guaranteed QoS), both are updated together.
-func recommendStatic(u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity, minCPUMillis, minMemMi int64) Recommendation {
+func recommendStatic(u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Quantity, minCPUMillis, minMemMi, maxCPUMillis, maxMemMi int64) Recommendation {
 	var parts []string
 
-	// CPU: p99 + 20% headroom, rounded up to nearest 10m, floored at minCPUMillis.
+	// CPU: p99 + 20% headroom, rounded up to nearest 10m, floored at minCPUMillis, capped at maxCPUMillis.
 	recCPUMillis := int64(math.Ceil(u.CPUP99 * 1200)) // cores * 1000m/core * 1.2 headroom
 	recCPUMillis = roundUpTo(recCPUMillis, 10)
 	if recCPUMillis < minCPUMillis {
 		recCPUMillis = minCPUMillis
+	}
+	if maxCPUMillis > 0 && recCPUMillis > maxCPUMillis {
+		recCPUMillis = maxCPUMillis
 	}
 	cpuChanged := significantDiff(float64(recCPUMillis), float64(cpuReq.MilliValue()))
 	if cpuChanged {
 		parts = append(parts, fmt.Sprintf("CPU %s -> %dm", cpuReq.String(), recCPUMillis))
 	}
 
-	// Memory: p99 + 30% headroom, rounded up to nearest Mi, floored at minMemMi.
+	// Memory: p99 + 30% headroom, rounded up to nearest Mi, floored at minMemMi, capped at maxMemMi.
 	var recMemMi int64
 	memChanged := false
 	if u.MemP99 > 0 {
 		recMemMi = int64(math.Ceil(u.MemP99 * 1.3 / 1048576))
 		if recMemMi < minMemMi {
 			recMemMi = minMemMi
+		}
+		if maxMemMi > 0 && recMemMi > maxMemMi {
+			recMemMi = maxMemMi
 		}
 		curMemMi := memReq.Value() / 1048576
 		memChanged = significantDiff(float64(recMemMi), float64(curMemMi))
@@ -122,11 +138,14 @@ func recommendStatic(u metrics.Usage, cpuReq, cpuLim, memReq, memLim resource.Qu
 }
 
 // recommendRunaway suggests increasing the memory limit to give headroom above p99.
-func recommendRunaway(u metrics.Usage, memLim resource.Quantity) Recommendation {
+func recommendRunaway(u metrics.Usage, memLim resource.Quantity, maxMemMi int64) Recommendation {
 	if u.MemP99 <= 0 || memLim.IsZero() {
 		return Recommendation{Hold: true, HoldReason: "RUNAWAY — insufficient data"}
 	}
 	recMi := int64(math.Ceil(u.MemP99 * 1.5 / 1048576))
+	if maxMemMi > 0 && recMi > maxMemMi {
+		recMi = maxMemMi
+	}
 	recStr := fmt.Sprintf("%dMi", recMi)
 	return Recommendation{
 		Text:         fmt.Sprintf("Increase MEM limit to %dMi (RUNAWAY)", recMi),
@@ -137,6 +156,84 @@ func recommendRunaway(u metrics.Usage, memLim resource.Quantity) Recommendation 
 		},
 	}
 }
+
+// RecommendHPAValues returns a suggested HPA configuration given explicit current values.
+// driver is "CPU" or "Memory"; reason is "WontFire" or "Tuning".
+// currentMinReplicas of 0 is treated as 1.
+func RecommendHPAValues(u metrics.Usage, cpuReq, memReq resource.Quantity, currentCPUTarget, currentMemTarget *int32, currentMinReplicas int32, driver, reason string) HPARecommendation {
+	if !u.HasData {
+		return HPARecommendation{}
+	}
+
+	minReplicas := currentMinReplicas
+	if minReplicas < 1 {
+		minReplicas = 1
+	}
+	// Raise minReplicas from 1 to 2 to absorb cold-start spikes.
+	if minReplicas == 1 {
+		minReplicas = 2
+	}
+
+	rec := HPARecommendation{
+		MinReplicas: minReplicas,
+		Driver:      driver,
+		Reason:      reason,
+	}
+
+	switch driver {
+	case "CPU":
+		target := recommendCPUTarget(u, cpuReq, currentCPUTarget)
+		rec.TargetCPU = &target
+		rec.Text = fmt.Sprintf("CPU HPA target -> %d%%, minReplicas -> %d", target, minReplicas)
+	case "Memory":
+		target := recommendMemTarget(u, memReq, currentMemTarget)
+		rec.TargetMemory = &target
+		rec.Text = fmt.Sprintf("Memory HPA target -> %d%%, minReplicas -> %d", target, minReplicas)
+	}
+
+	return rec
+}
+
+// recommendCPUTarget computes a CPU utilization target between p50 and p99.
+// If p99 is already below the current target (won't-fire case), lower the target to just below p99.
+func recommendCPUTarget(u metrics.Usage, cpuReq resource.Quantity, current *int32) int32 {
+	if cpuReq.IsZero() {
+		return 70 // safe default when no request set
+	}
+	cpuReqCores := float64(cpuReq.MilliValue()) / 1000.0
+	p50Pct := (u.CPUP50 / cpuReqCores) * 100
+	p99Pct := (u.CPUP99 / cpuReqCores) * 100
+
+	// Target: midpoint between p50 and p99, giving headroom before saturation.
+	target := int32(math.Round((p50Pct + p99Pct) / 2))
+	if target < 20 {
+		target = 20
+	}
+	if target > 90 {
+		target = 90
+	}
+	return target
+}
+
+// recommendMemTarget computes a memory utilization target between p50 and p99.
+func recommendMemTarget(u metrics.Usage, memReq resource.Quantity, current *int32) int32 {
+	if memReq.IsZero() {
+		return 70
+	}
+	memReqBytes := float64(memReq.Value())
+	p50Pct := (u.MemP50 / memReqBytes) * 100
+	p99Pct := (u.MemP99 / memReqBytes) * 100
+
+	target := int32(math.Round((p50Pct + p99Pct) / 2))
+	if target < 20 {
+		target = 20
+	}
+	if target > 90 {
+		target = 90
+	}
+	return target
+}
+
 
 // significantDiff returns true when recommended and current differ by more than 10%.
 func significantDiff(recommended, current float64) bool {

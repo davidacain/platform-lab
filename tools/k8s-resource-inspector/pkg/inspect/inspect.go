@@ -13,15 +13,13 @@ import (
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/metrics"
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/output"
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/pods"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/dynamic"
 )
 
 // BuildRows runs the full inspect pipeline and returns one PodRow per container.
 // Rows are unsorted and unfiltered — callers apply their own sort/filter.
 func BuildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interface, apps []argo.App, window string, confidenceThreshold float64) ([]output.PodRow, error) {
-	minCPU := cfg.MinCPUMillis()
-	minMem := cfg.MinMemoryMi()
-
 	listerCache := map[string]pods.PodLister{}
 	metricsCache := map[string]*metrics.Client{}
 
@@ -89,6 +87,24 @@ func BuildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 		}
 		appHPA := hpa.FindForTarget(hpas, app.Name)
 
+		// Resolve per-app floor/ceiling, falling back to global config.
+		cpuFloorMillis := cfg.MinCPUMillis()
+		memFloorMi := cfg.MinMemoryMi()
+		if !app.CPUFloor.IsZero() {
+			cpuFloorMillis = app.CPUFloor.MilliValue()
+		}
+		if !app.MemFloor.IsZero() {
+			memFloorMi = app.MemFloor.Value() / (1024 * 1024)
+		}
+		cpuCeilingMillis := int64(0)
+		memCeilingMi := int64(0)
+		if !app.CPUCeiling.IsZero() {
+			cpuCeilingMillis = app.CPUCeiling.MilliValue()
+		}
+		if !app.MemCeiling.IsZero() {
+			memCeilingMi = app.MemCeiling.Value() / (1024 * 1024)
+		}
+
 		type podWithBehavior struct {
 			row      output.PodRow
 			behavior analysis.BehaviorClass
@@ -97,18 +113,19 @@ func BuildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 
 		for _, p := range podList {
 			row := output.PodRow{
-				AppName:      app.Name,
-				Cluster:      app.DestinationName,
-				Namespace:    p.Namespace,
-				PodName:      p.PodName,
-				WorkloadName: p.WorkloadName,
-				Container:    p.ContainerName,
-				CPUReq:       p.CPURequest,
-				CPULim:       p.CPULimit,
-				MemReq:       p.MemRequest,
-				MemLim:       p.MemLimit,
-				RepoURL:      app.RepoURL,
-				ChartPath:    app.Path,
+				AppName:            app.Name,
+				Cluster:            app.DestinationName,
+				Namespace:          p.Namespace,
+				PodName:            p.PodName,
+				WorkloadName:       p.WorkloadName,
+				Container:          p.ContainerName,
+				CPUReq:             p.CPURequest,
+				CPULim:             p.CPULimit,
+				MemReq:             p.MemRequest,
+				MemLim:             p.MemLimit,
+				RepoURL:            app.RepoURL,
+				ChartPath:          app.Path,
+				HPAWarningDisabled: app.HPAWarningDisabled,
 			}
 
 			if u, ok := usageMap[metrics.ContainerKey{
@@ -128,8 +145,27 @@ func BuildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 				behavior, confidence := analysis.ClassifyPod(u, p.MemLimit)
 				row.Behavior = behavior
 				row.Confidence = confidence
+
+				cpuRatio := safeRatio(u.CPUP99, u.CPUP50)
+				memRatio := safeRatio(u.MemP99, u.MemP50)
+				driver := hpa.RecommendMetricDriver(cpuRatio, memRatio)
+
 				row.HPAStatus = hpa.Validate(appHPA, u, p.CPURequest, p.MemRequest, behavior)
-				row.Recommendation = analysis.Recommend(behavior, confidence, confidenceThreshold, u, p.CPURequest, p.CPULimit, p.MemRequest, p.MemLimit, minCPU, minMem)
+
+				// Layer 1: HPA present but won't fire — takes full precedence.
+				if appHPA != nil && hpa.WontFire(appHPA, u, p.CPURequest, p.MemRequest, driver) {
+					hpaRec := analysis.RecommendHPAValues(u, p.CPURequest, p.MemRequest,
+						appHPA.CPUTarget, appHPA.MemTarget, appHPA.MinReplicas,
+						string(driver), "WontFire")
+					row.HPARecommendation = &hpaRec
+					row.Recommendation = analysis.Recommendation{Hold: true, HoldReason: "HPA fix takes precedence"}
+				} else {
+					// Layer 2: behavior-based routing.
+					row.Recommendation = analysis.Recommend(behavior, confidence, confidenceThreshold, u,
+						p.CPURequest, p.CPULimit, p.MemRequest, p.MemLimit,
+						cpuFloorMillis, memFloorMi, cpuCeilingMillis, memCeilingMi)
+					row = applyHPARouting(row, appHPA, u, p.CPURequest, p.MemRequest, driver, behavior)
+				}
 
 				if gitConfig != nil && !row.Recommendation.Hold && row.Recommendation.Text != "" {
 					row.ValuesFilePath = gitConfig.FilePath
@@ -156,6 +192,7 @@ func BuildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 						Hold:       true,
 						HoldReason: "MIXED — investigate pod divergence first",
 					}
+					appPods[i].row.HPARecommendation = nil
 				}
 			}
 		}
@@ -166,4 +203,55 @@ func BuildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 	}
 
 	return rows, nil
+}
+
+// applyHPARouting applies Layer 2 routing: for behaviors where HPA is the right
+// lever (SPIKY with working HPA), replaces the resource recommendation with an
+// HPA recommendation. Also sets no-HPA warnings on resource increase PRs.
+func applyHPARouting(row output.PodRow, appHPA *hpa.Info, u metrics.Usage, cpuReq, memReq resource.Quantity, driver hpa.MetricDriver, behavior analysis.BehaviorClass) output.PodRow {
+	switch behavior {
+	case analysis.BehaviorSpiky:
+		if appHPA == nil {
+			// No HPA — resource headroom PR with warning.
+			if !row.HPAWarningDisabled {
+				row.HPAWarning = "no HPA configured; consider adding one to handle traffic spikes"
+			}
+		} else if row.Recommendation.IsActionable {
+			// HPA present and working: switch to HPA tuning instead of resource change.
+			hpaRec := analysis.RecommendHPAValues(u, cpuReq, memReq,
+				appHPA.CPUTarget, appHPA.MemTarget, appHPA.MinReplicas,
+				string(driver), "Tuning")
+			row.HPARecommendation = &hpaRec
+			row.Recommendation = analysis.Recommendation{Hold: true, HoldReason: "HPA tuning preferred for SPIKY workload"}
+		}
+
+	case analysis.BehaviorGrowth:
+		if appHPA == nil {
+			if !row.HPAWarningDisabled {
+				row.HPAWarning = "no HPA configured; resource increase may be a short-term fix"
+			}
+		} else if appHPA.MaxReplicas > appHPA.CurrentReplicas {
+			// HPA has headroom — noop, let it scale out.
+			row.Recommendation = analysis.Recommendation{Hold: true, HoldReason: "GROWTH — HPA has headroom to scale out"}
+		}
+		// If maxed out (CurrentReplicas >= MaxReplicas), keep the resource increase recommendation.
+
+	case analysis.BehaviorRunaway:
+		if appHPA == nil && !row.HPAWarningDisabled {
+			row.HPAWarning = "no HPA configured; pod is at OOM risk with no scaling relief"
+		}
+		// Resource increase recommendation stands regardless of HPA state.
+
+	case analysis.BehaviorStatic:
+		// Resource optimization — no HPA warning needed on reductions.
+	}
+
+	return row
+}
+
+func safeRatio(p99, p50 float64) float64 {
+	if p50 <= 0 {
+		return 1.0
+	}
+	return p99 / p50
 }

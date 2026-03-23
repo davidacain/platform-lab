@@ -45,6 +45,14 @@ type PodRow struct {
 	// Recommendation (Phase 5)
 	Recommendation analysis.Recommendation
 
+	// HPA recommendation — non-nil when routing selects an HPA change over a resource change.
+	HPARecommendation *analysis.HPARecommendation
+
+	// HPAWarningDisabled suppresses the no-HPA warning for this app.
+	HPAWarningDisabled bool
+	// HPAWarning is set when a resource increase PR is opened but no HPA is configured.
+	HPAWarning string
+
 	// Values file path from git (Phase 6)
 	ValuesFilePath string
 

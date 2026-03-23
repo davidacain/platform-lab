@@ -38,6 +38,15 @@ type ContainerPlan struct {
 	MemLimit   string `yaml:"mem_limit"`
 }
 
+// HPAValues holds the recommended HPA configuration for a workload.
+type HPAValues struct {
+	MinReplicas                     int32  `yaml:"min_replicas"`
+	TargetCPUUtilizationPercentage  *int32 `yaml:"target_cpu_utilization_percentage,omitempty"`
+	TargetMemUtilizationPercentage  *int32 `yaml:"target_memory_utilization_percentage,omitempty"`
+	Driver                          string `yaml:"driver"` // CPU or Memory
+	Reason                          string `yaml:"reason"` // human-readable why (WontFire or Tuning)
+}
+
 // AppPlan holds the plan for a single ArgoCD application.
 type AppPlan struct {
 	App        string          `yaml:"app"`
@@ -46,6 +55,8 @@ type AppPlan struct {
 	Window     string          `yaml:"window"`
 	Apply      bool            `yaml:"apply"`
 	Containers []ContainerPlan `yaml:"containers"`
+	HPA        *HPAValues      `yaml:"hpa,omitempty"`     // non-nil when an HPA change is recommended
+	HPAWarning string          `yaml:"hpa_warning,omitempty"` // set when resources increased but no HPA configured
 }
 
 // Build converts inspect rows into a list of AppPlans, one per app.
@@ -82,6 +93,7 @@ func Build(rows []output.PodRow, window string) []AppPlan {
 				ValuesFile: path.Join(r.ChartPath, "values-resources.yaml"),
 				Window:     window,
 				Apply:      true,
+				HPAWarning: r.HPAWarning,
 			})
 			idx = len(plans) - 1
 			appIndex[r.AppName] = idx
@@ -105,6 +117,47 @@ func Build(rows []output.PodRow, window string) []AppPlan {
 			CPULimit:          res.CPULimit,
 			MemRequest:        res.MemRequest,
 			MemLimit:          res.MemLimit,
+		})
+	}
+
+	return plans
+}
+
+// BuildHPA converts inspect rows into a list of AppPlans carrying HPA recommendations.
+// Only rows with an actionable HPA recommendation are included.
+// Multiple pods of the same app are deduplicated — first occurrence wins.
+func BuildHPA(rows []output.PodRow, window string) []AppPlan {
+	seen := map[string]bool{}
+	var plans []AppPlan
+
+	for _, r := range rows {
+		if r.HPARecommendation == nil {
+			continue
+		}
+		if seen[r.AppName] {
+			continue
+		}
+		seen[r.AppName] = true
+
+		hpaValues := &HPAValues{
+			MinReplicas: r.HPARecommendation.MinReplicas,
+			Driver:      r.HPARecommendation.Driver,
+			Reason:      r.HPARecommendation.Reason,
+		}
+		if r.HPARecommendation.TargetCPU != nil {
+			hpaValues.TargetCPUUtilizationPercentage = r.HPARecommendation.TargetCPU
+		}
+		if r.HPARecommendation.TargetMemory != nil {
+			hpaValues.TargetMemUtilizationPercentage = r.HPARecommendation.TargetMemory
+		}
+
+		plans = append(plans, AppPlan{
+			App:        r.AppName,
+			Repo:       r.RepoURL,
+			ValuesFile: path.Join(r.ChartPath, "values-hpa.yaml"),
+			Window:     window,
+			Apply:      true,
+			HPA:        hpaValues,
 		})
 	}
 

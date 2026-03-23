@@ -67,7 +67,7 @@ func TestRecommend_holdCases(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			r := Recommend(tt.behavior, 0.5, 0.8, tt.u, cpuReq, cpuLim, memReq, memLim, 10, 16)
+			r := Recommend(tt.behavior, 0.5, 0.8, tt.u, cpuReq, cpuLim, memReq, memLim, 10, 16, 0, 0)
 			if r.Hold != tt.wantHold {
 				t.Errorf("Hold = %v, want %v", r.Hold, tt.wantHold)
 			}
@@ -95,7 +95,7 @@ func TestRecommend_withinTolerance(t *testing.T) {
 	memReq := mustParse("128Mi")
 	memLim := mustParse("256Mi")
 
-	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16)
+	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16, 0, 0)
 	if r.IsActionable {
 		t.Errorf("expected within tolerance, got actionable: %s", r.Text)
 	}
@@ -119,7 +119,7 @@ func TestRecommend_staticActionable(t *testing.T) {
 	memReq := mustParse("128Mi")
 	memLim := mustParse("256Mi")
 
-	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16)
+	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16, 0, 0)
 
 	if !r.IsActionable {
 		t.Fatal("expected actionable recommendation")
@@ -156,7 +156,7 @@ func TestRecommend_guaranteedQoSPreserved(t *testing.T) {
 	memReq := mustParse("128Mi")
 	memLim := mustParse("128Mi") // same as req → Guaranteed
 
-	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16)
+	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16, 0, 0)
 
 	if !r.IsActionable {
 		t.Fatal("expected actionable recommendation")
@@ -178,7 +178,7 @@ func TestRecommend_runaway(t *testing.T) {
 	}
 	cpuReq, cpuLim, memReq, memLim := mustParse("100m"), mustParse("100m"), mustParse("128Mi"), mustParse("128Mi")
 
-	r := Recommend(BehaviorRunaway, 0.95, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16)
+	r := Recommend(BehaviorRunaway, 0.95, 0.8, u, cpuReq, cpuLim, memReq, memLim, 10, 16, 0, 0)
 
 	if !r.IsActionable {
 		t.Fatal("RUNAWAY should produce an actionable recommendation")
@@ -203,7 +203,7 @@ func TestRecommend_floorApplied(t *testing.T) {
 	memReq := mustParse("128Mi")
 	memLim := mustParse("128Mi")
 
-	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 5, 8)
+	r := Recommend(BehaviorStatic, 0.9, 0.8, u, cpuReq, cpuLim, memReq, memLim, 5, 8, 0, 0)
 
 	if !r.IsActionable {
 		t.Fatal("expected actionable recommendation")

@@ -20,15 +20,24 @@ var hpaGVR = schema.GroupVersionResource{
 
 // Info holds the fields from an HPA that are relevant to kri validation.
 type Info struct {
-	Name        string
-	Namespace   string
-	TargetKind  string
-	TargetName  string // scaleTargetRef.name — used to join to workloads
-	MinReplicas int32
-	MaxReplicas int32
-	CPUTarget   *int32 // averageUtilization %, nil if HPA does not target CPU
-	MemTarget   *int32 // averageUtilization %, nil if HPA does not target memory
+	Name            string
+	Namespace       string
+	TargetKind      string
+	TargetName      string // scaleTargetRef.name — used to join to workloads
+	MinReplicas     int32
+	MaxReplicas     int32
+	CurrentReplicas int32  // status.currentReplicas
+	CPUTarget       *int32 // averageUtilization %, nil if HPA does not target CPU
+	MemTarget       *int32 // averageUtilization %, nil if HPA does not target memory
 }
+
+// MetricDriver indicates which resource metric is the primary driver of scaling.
+type MetricDriver string
+
+const (
+	DriverCPU    MetricDriver = "CPU"
+	DriverMemory MetricDriver = "Memory"
+)
 
 // Finding is a single HPA validation result.
 type Finding struct {
@@ -69,13 +78,21 @@ func List(ctx context.Context, dynClient dynamic.Interface, namespace string) ([
 			maxReplicas = int32(v)
 		}
 
+		currentReplicas := int32(0)
+		if status, ok := item.Object["status"].(map[string]interface{}); ok {
+			if v, ok := status["currentReplicas"].(int64); ok {
+				currentReplicas = int32(v)
+			}
+		}
+
 		info := Info{
-			Name:        item.GetName(),
-			Namespace:   item.GetNamespace(),
-			TargetKind:  targetKind,
-			TargetName:  targetName,
-			MinReplicas: minReplicas,
-			MaxReplicas: maxReplicas,
+			Name:            item.GetName(),
+			Namespace:       item.GetNamespace(),
+			TargetKind:      targetKind,
+			TargetName:      targetName,
+			MinReplicas:     minReplicas,
+			MaxReplicas:     maxReplicas,
+			CurrentReplicas: currentReplicas,
 		}
 
 		metricsList, _ := spec["metrics"].([]interface{})
@@ -186,4 +203,90 @@ func Validate(h *Info, u metrics.Usage, cpuReq, memReq resource.Quantity, behavi
 		}
 	}
 	return Validation{Status: status, Findings: findings}
+}
+
+// WontFire returns true when the HPA is structurally broken or will never
+// trigger under observed conditions. Requires sufficient usage data.
+//
+// Cases:
+//   - maxReplicas == minReplicas: scaling range is zero
+//   - no metrics configured: no trigger condition
+//   - missing resource request for targeted metric (ERROR finding)
+//   - p99 utilization never crosses the configured target
+//   - wrong metric: memory-driven workload with a CPU-only HPA (or vice versa)
+func WontFire(h *Info, u metrics.Usage, cpuReq, memReq resource.Quantity, driver MetricDriver) bool {
+	if h == nil {
+		return false
+	}
+	if !u.HasData {
+		return false
+	}
+
+	// Structural: scaling range is zero.
+	if h.MaxReplicas <= h.MinReplicas {
+		return true
+	}
+
+	// Structural: no metrics configured.
+	if h.CPUTarget == nil && h.MemTarget == nil {
+		return true
+	}
+
+	// Structural: missing request for targeted metric.
+	if h.CPUTarget != nil && cpuReq.IsZero() {
+		return true
+	}
+	if h.MemTarget != nil && memReq.IsZero() {
+		return true
+	}
+
+	// Wrong metric: HPA targets only CPU but workload is memory-driven.
+	if driver == DriverMemory && h.CPUTarget != nil && h.MemTarget == nil {
+		return true
+	}
+	// Wrong metric: HPA targets only memory but workload is CPU-driven.
+	if driver == DriverCPU && h.MemTarget != nil && h.CPUTarget == nil {
+		return true
+	}
+
+	// Behavioural: p99 never crosses the configured target under observed conditions.
+	if h.CPUTarget != nil && !cpuReq.IsZero() {
+		cpuReqCores := float64(cpuReq.MilliValue()) / 1000.0
+		if cpuReqCores > 0 {
+			p99Pct := (u.CPUP99 / cpuReqCores) * 100
+			if p99Pct < float64(*h.CPUTarget) {
+				return true
+			}
+		}
+	}
+	if h.MemTarget != nil && !memReq.IsZero() {
+		memReqBytes := float64(memReq.Value())
+		if memReqBytes > 0 {
+			p99Pct := (u.MemP99 / memReqBytes) * 100
+			if p99Pct < float64(*h.MemTarget) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// RecommendMetricDriver returns the metric that should drive HPA scaling based
+// on observed usage ratios. CPU takes precedence when both exceed their spike
+// thresholds.
+func RecommendMetricDriver(cpuRatio, memRatio float64) MetricDriver {
+	const spikyCPURatio = 2.0
+	const spikyMemRatio = 1.8
+	if cpuRatio >= spikyCPURatio {
+		return DriverCPU
+	}
+	if memRatio >= spikyMemRatio {
+		return DriverMemory
+	}
+	// Below spike thresholds: use whichever ratio is higher relative to its threshold.
+	if cpuRatio/spikyCPURatio >= memRatio/spikyMemRatio {
+		return DriverCPU
+	}
+	return DriverMemory
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 )
@@ -21,12 +22,19 @@ var applicationGVR = schema.GroupVersionResource{
 // App is a minimal representation of an ArgoCD Application CR.
 type App struct {
 	Name            string
-	Namespace       string // spec.destination.namespace
-	DestinationName string // spec.destination.name — used to look up Prometheus endpoint
-	RepoURL         string // spec.source.repoURL
-	TargetRevision  string // spec.source.targetRevision
-	Path            string // spec.source.path — chart directory within the repo
+	Namespace       string   // spec.destination.namespace
+	DestinationName string   // spec.destination.name — used to look up Prometheus endpoint
+	RepoURL         string   // spec.source.repoURL
+	TargetRevision  string   // spec.source.targetRevision
+	Path            string   // spec.source.path — chart directory within the repo
 	ValueFiles      []string // spec.source.helm.valueFiles
+
+	// Per-app kri annotation overrides.
+	HPAWarningDisabled bool            // kri.io/hpa-warning: "disabled"
+	CPUFloor           resource.Quantity // kri.io/cpu-floor — minimum CPU request/limit kri will recommend
+	CPUCeiling         resource.Quantity // kri.io/cpu-ceiling — maximum CPU request/limit kri will recommend
+	MemFloor           resource.Quantity // kri.io/memory-floor — minimum memory request/limit
+	MemCeiling         resource.Quantity // kri.io/memory-ceiling — maximum memory request/limit
 }
 
 // List reads all ArgoCD Application CRs from the given namespace.
@@ -78,7 +86,8 @@ func List(ctx context.Context, dynClient dynamic.Interface, argoNamespace string
 			}
 		}
 
-		apps = append(apps, App{
+		ann := item.GetAnnotations()
+		app := App{
 			Name:            item.GetName(),
 			Namespace:       destNS,
 			DestinationName: destName,
@@ -86,10 +95,30 @@ func List(ctx context.Context, dynClient dynamic.Interface, argoNamespace string
 			TargetRevision:  targetRevision,
 			Path:            appPath,
 			ValueFiles:      valueFiles,
-		})
+			HPAWarningDisabled: ann["kri.io/hpa-warning"] == "disabled",
+		}
+		app.CPUFloor = parseQuantityAnnotation(ann, "kri.io/cpu-floor")
+		app.CPUCeiling = parseQuantityAnnotation(ann, "kri.io/cpu-ceiling")
+		app.MemFloor = parseQuantityAnnotation(ann, "kri.io/memory-floor")
+		app.MemCeiling = parseQuantityAnnotation(ann, "kri.io/memory-ceiling")
+		apps = append(apps, app)
 	}
 
 	return apps, nil
+}
+
+// parseQuantityAnnotation parses a resource.Quantity from an annotation value.
+// Returns a zero Quantity if the annotation is absent or unparseable.
+func parseQuantityAnnotation(ann map[string]string, key string) resource.Quantity {
+	v, ok := ann[key]
+	if !ok || v == "" {
+		return resource.Quantity{}
+	}
+	q, err := resource.ParseQuantity(v)
+	if err != nil {
+		return resource.Quantity{}
+	}
+	return q
 }
 
 // parseMultiSource extracts App fields from a multi-source Application spec.
