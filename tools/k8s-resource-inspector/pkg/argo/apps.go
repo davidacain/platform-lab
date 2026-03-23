@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path"
+	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -46,22 +48,31 @@ func List(ctx context.Context, dynClient dynamic.Interface, argoNamespace string
 		destNS, _ := dest["namespace"].(string)
 
 		// ArgoCD supports both spec.source (single) and spec.sources (multi).
-		// kri only reads the primary source; skip multi-source apps with a warning.
-		source, _ := spec["source"].(map[string]interface{})
-		if _, hasSources := spec["sources"]; hasSources && source == nil {
-			fmt.Fprintf(os.Stderr, "warn: app %q uses spec.sources (multi-source); skipping\n", item.GetName())
-			continue
-		}
-		repoURL, _ := source["repoURL"].(string)
-		targetRevision, _ := source["targetRevision"].(string)
-		path, _ := source["path"].(string)
-
+		var repoURL, targetRevision, appPath string
 		var valueFiles []string
-		if helm, ok := source["helm"].(map[string]interface{}); ok {
-			if vf, ok := helm["valueFiles"].([]interface{}); ok {
-				for _, f := range vf {
-					if s, ok := f.(string); ok {
-						valueFiles = append(valueFiles, s)
+
+		if rawSources, hasSources := spec["sources"]; hasSources {
+			sources, _ := rawSources.([]interface{})
+			var ok bool
+			repoURL, targetRevision, appPath, valueFiles, ok = parseMultiSource(sources)
+			if !ok {
+				fmt.Fprintf(os.Stderr, "warn: app %q: multi-source spec missing values source or helm source; skipping\n", item.GetName())
+				continue
+			}
+		} else {
+			source, _ := spec["source"].(map[string]interface{})
+			if source == nil {
+				continue
+			}
+			repoURL, _ = source["repoURL"].(string)
+			targetRevision, _ = source["targetRevision"].(string)
+			appPath, _ = source["path"].(string)
+			if helm, ok := source["helm"].(map[string]interface{}); ok {
+				if vf, ok := helm["valueFiles"].([]interface{}); ok {
+					for _, f := range vf {
+						if s, ok := f.(string); ok {
+							valueFiles = append(valueFiles, s)
+						}
 					}
 				}
 			}
@@ -73,10 +84,62 @@ func List(ctx context.Context, dynClient dynamic.Interface, argoNamespace string
 			DestinationName: destName,
 			RepoURL:         repoURL,
 			TargetRevision:  targetRevision,
-			Path:            path,
+			Path:            appPath,
 			ValueFiles:      valueFiles,
 		})
 	}
 
 	return apps, nil
+}
+
+// parseMultiSource extracts App fields from a multi-source Application spec.
+// It expects a source with ref: "values" (the write target) and a Helm source
+// (no ref) whose valueFiles contains a $values/... entry to derive the path.
+func parseMultiSource(sources []interface{}) (repoURL, targetRevision, appPath string, valueFiles []string, ok bool) {
+	var valuesSource, helmSource map[string]interface{}
+
+	for _, s := range sources {
+		src, _ := s.(map[string]interface{})
+		if src == nil {
+			continue
+		}
+		ref, _ := src["ref"].(string)
+		switch ref {
+		case "values":
+			valuesSource = src
+		case "":
+			helmSource = src
+		}
+	}
+
+	if valuesSource == nil || helmSource == nil {
+		return "", "", "", nil, false
+	}
+
+	repoURL, _ = valuesSource["repoURL"].(string)
+	targetRevision, _ = valuesSource["targetRevision"].(string)
+
+	if helm, ok2 := helmSource["helm"].(map[string]interface{}); ok2 {
+		if vf, ok3 := helm["valueFiles"].([]interface{}); ok3 {
+			for _, f := range vf {
+				if s, ok4 := f.(string); ok4 {
+					valueFiles = append(valueFiles, s)
+				}
+			}
+		}
+	}
+
+	// Derive write-target directory from the first $values/... entry in valueFiles.
+	for _, vf := range valueFiles {
+		if strings.HasPrefix(vf, "$values/") {
+			rel := strings.TrimPrefix(vf, "$values/")
+			appPath = path.Dir(rel)
+			if appPath == "." {
+				appPath = ""
+			}
+			break
+		}
+	}
+
+	return repoURL, targetRevision, appPath, valueFiles, true
 }
