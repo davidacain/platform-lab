@@ -12,26 +12,20 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-const (
-	// MemPressureThreshold is the memory limit ratio above which a container
-	// is considered under memory pressure.
-	MemPressureThreshold = 0.9
-
-	// CPUThrottleThreshold is the CPU throttle ratio above which a container
-	// is considered CPU-throttled.
-	CPUThrottleThreshold = 0.25
-)
-
-// ResourcePressure summarises resource pressure observed for a single container
-// during a specific time window.
+// ResourcePressure summarises resource usage observed for a single container
+// during a specific time window (typically a failed rollout).
 type ResourcePressure struct {
-	MemPeakBytes     float64 // maximum working set bytes during the window
-	MemLimitBytes    float64 // configured memory limit (0 = no limit set)
-	MemLimitRatio    float64 // MemPeakBytes / MemLimitBytes; 0 if no limit
-	CPUThrottleRatio float64 // throttled CPU periods / total CPU periods
-	HasMemPressure   bool    // MemLimitRatio >= MemPressureThreshold
-	HasCPUThrottle   bool    // CPUThrottleRatio >= CPUThrottleThreshold
-	HasData          bool
+	MemPeakBytes    float64 // max working set bytes during the window
+	MemRequestBytes float64 // configured memory request (0 = not set)
+	MemLimitBytes   float64 // configured memory limit (0 = not set)
+	CPUCores        float64 // average CPU usage during the window (cores)
+	CPUThrottleRatio float64 // fraction of CPU periods that were throttled
+	// HasMemPressure is true when peak usage exceeded the configured request.
+	// False when no request is set.
+	HasMemPressure bool
+	// HasCPUThrottle is true when any CPU throttling was observed.
+	HasCPUThrottle bool
+	HasData        bool
 }
 
 // ContainerKey uniquely identifies a container within a pod.
@@ -195,6 +189,7 @@ func (c *Client) PressureAt(ctx context.Context, namespace string, podNames []st
 
 	queries := []querySpec{
 		{
+			// Peak working set — memory is stateful so the max matters more than average.
 			name:  "mem peak",
 			query: fmt.Sprintf(`max_over_time(container_memory_working_set_bytes{%s}[%s])`, baseSelector, window),
 			apply: func(p *ResourcePressure, v float64) {
@@ -204,18 +199,36 @@ func (c *Client) PressureAt(ctx context.Context, namespace string, podNames []st
 			},
 		},
 		{
+			name:  "mem request",
+			query: fmt.Sprintf(`container_spec_memory_request_bytes{%s}`, baseSelector),
+			apply: func(p *ResourcePressure, v float64) {
+				if v > 0 && v > p.MemRequestBytes {
+					p.MemRequestBytes = v
+				}
+			},
+		},
+		{
 			name:  "mem limit",
 			query: fmt.Sprintf(`container_spec_memory_limit_bytes{%s}`, baseSelector),
 			apply: func(p *ResourcePressure, v float64) {
-				// 0 means no limit; keep the highest non-zero value seen.
 				if v > 0 && v > p.MemLimitBytes {
 					p.MemLimitBytes = v
 				}
 			},
 		},
 		{
-			// CPU throttle ratio: fraction of CPU periods that were throttled.
-			// Using rate() over the observation window gives the average ratio.
+			// Average CPU over the rollout window. rate() over the full window gives
+			// a single average-cores value; no subquery needed for a tight window.
+			name:  "cpu usage",
+			query: fmt.Sprintf(`rate(container_cpu_usage_seconds_total{%s}[%s])`, baseSelector, window),
+			apply: func(p *ResourcePressure, v float64) {
+				if v > p.CPUCores {
+					p.CPUCores = v
+				}
+			},
+		},
+		{
+			// Throttle ratio: fraction of CPU periods that were throttled during the window.
 			name: "cpu throttle",
 			query: fmt.Sprintf(
 				`rate(container_cpu_cfs_throttled_periods_total{%s}[%s]) / rate(container_cpu_cfs_periods_total{%s}[%s])`,
@@ -250,11 +263,8 @@ func (c *Client) PressureAt(ctx context.Context, namespace string, podNames []st
 
 	// Compute derived fields now that all queries are done.
 	for container, p := range result {
-		if p.MemLimitBytes > 0 {
-			p.MemLimitRatio = p.MemPeakBytes / p.MemLimitBytes
-		}
-		p.HasMemPressure = p.MemLimitRatio >= MemPressureThreshold
-		p.HasCPUThrottle = p.CPUThrottleRatio >= CPUThrottleThreshold
+		p.HasMemPressure = p.MemRequestBytes > 0 && p.MemPeakBytes > p.MemRequestBytes
+		p.HasCPUThrottle = p.CPUThrottleRatio > 0
 		result[container] = p
 	}
 
