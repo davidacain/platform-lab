@@ -3,12 +3,36 @@ package metrics
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
 	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
 )
+
+const (
+	// MemPressureThreshold is the memory limit ratio above which a container
+	// is considered under memory pressure.
+	MemPressureThreshold = 0.9
+
+	// CPUThrottleThreshold is the CPU throttle ratio above which a container
+	// is considered CPU-throttled.
+	CPUThrottleThreshold = 0.25
+)
+
+// ResourcePressure summarises resource pressure observed for a single container
+// during a specific time window.
+type ResourcePressure struct {
+	MemPeakBytes     float64 // maximum working set bytes during the window
+	MemLimitBytes    float64 // configured memory limit (0 = no limit set)
+	MemLimitRatio    float64 // MemPeakBytes / MemLimitBytes; 0 if no limit
+	CPUThrottleRatio float64 // throttled CPU periods / total CPU periods
+	HasMemPressure   bool    // MemLimitRatio >= MemPressureThreshold
+	HasCPUThrottle   bool    // CPUThrottleRatio >= CPUThrottleThreshold
+	HasData          bool
+}
 
 // ContainerKey uniquely identifies a container within a pod.
 type ContainerKey struct {
@@ -133,6 +157,105 @@ func (c *Client) UsageMetrics(ctx context.Context, namespace, window string) (ma
 			q.apply(&u, float64(s.Value))
 			result[k] = u
 		}
+	}
+
+	return result, nil
+}
+
+// PressureAt queries CPU and memory pressure for the given pods during [from, to].
+// The window duration is derived from to-from and used as the Prometheus range.
+// Returns a map keyed by container name; values are the worst-case (max-across-pods)
+// pressure observed. Only containers present in the queried metrics are included.
+func (c *Client) PressureAt(ctx context.Context, namespace string, podNames []string, from, to time.Time) (map[string]ResourcePressure, error) {
+	if len(podNames) == 0 {
+		return nil, nil
+	}
+
+	// Build a regex that matches any of the pod names exactly.
+	escaped := make([]string, len(podNames))
+	for i, p := range podNames {
+		escaped[i] = regexp.QuoteMeta(p)
+	}
+	podRegex := strings.Join(escaped, "|")
+
+	// Round the window up to the nearest second; Prometheus requires an integer.
+	windowSecs := int(to.Sub(from).Seconds())
+	if windowSecs < 1 {
+		windowSecs = 1
+	}
+	window := fmt.Sprintf("%ds", windowSecs)
+
+	baseSelector := fmt.Sprintf(`namespace=%q,pod=~%q,container!=""`, namespace, podRegex)
+
+	type querySpec struct {
+		name  string
+		query string
+		apply func(p *ResourcePressure, v float64)
+	}
+
+	queries := []querySpec{
+		{
+			name:  "mem peak",
+			query: fmt.Sprintf(`max_over_time(container_memory_working_set_bytes{%s}[%s])`, baseSelector, window),
+			apply: func(p *ResourcePressure, v float64) {
+				if v > p.MemPeakBytes {
+					p.MemPeakBytes = v
+				}
+			},
+		},
+		{
+			name:  "mem limit",
+			query: fmt.Sprintf(`container_spec_memory_limit_bytes{%s}`, baseSelector),
+			apply: func(p *ResourcePressure, v float64) {
+				// 0 means no limit; keep the highest non-zero value seen.
+				if v > 0 && v > p.MemLimitBytes {
+					p.MemLimitBytes = v
+				}
+			},
+		},
+		{
+			// CPU throttle ratio: fraction of CPU periods that were throttled.
+			// Using rate() over the observation window gives the average ratio.
+			name: "cpu throttle",
+			query: fmt.Sprintf(
+				`rate(container_cpu_cfs_throttled_periods_total{%s}[%s]) / rate(container_cpu_cfs_periods_total{%s}[%s])`,
+				baseSelector, window, baseSelector, window,
+			),
+			apply: func(p *ResourcePressure, v float64) {
+				if v > p.CPUThrottleRatio {
+					p.CPUThrottleRatio = v
+				}
+			},
+		},
+	}
+
+	result := make(map[string]ResourcePressure)
+
+	for _, q := range queries {
+		vec, err := c.queryVector(ctx, q.query, to)
+		if err != nil {
+			return nil, fmt.Errorf("pressure query %s: %w", q.name, err)
+		}
+		for _, s := range vec {
+			container := string(s.Metric["container"])
+			if container == "" {
+				continue
+			}
+			p := result[container]
+			p.HasData = true
+			q.apply(&p, float64(s.Value))
+			result[container] = p
+		}
+	}
+
+	// Compute derived fields now that all queries are done.
+	for container, p := range result {
+		if p.MemLimitBytes > 0 {
+			p.MemLimitRatio = p.MemPeakBytes / p.MemLimitBytes
+		}
+		p.HasMemPressure = p.MemLimitRatio >= MemPressureThreshold
+		p.HasCPUThrottle = p.CPUThrottleRatio >= CPUThrottleThreshold
+		result[container] = p
 	}
 
 	return result, nil
