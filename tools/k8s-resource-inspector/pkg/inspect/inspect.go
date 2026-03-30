@@ -212,9 +212,10 @@ func applyHPARouting(row output.PodRow, appHPA *hpa.Info, u metrics.Usage, cpuRe
 	switch behavior {
 	case analysis.BehaviorSpiky:
 		if appHPA == nil {
-			// No HPA — resource headroom PR with warning.
 			if !row.HPAWarningDisabled {
 				row.HPAWarning = "no HPA configured; consider adding one to handle traffic spikes"
+				hpaRec := analysis.RecommendHPAValues(u, cpuReq, memReq, nil, nil, 1, string(driver), "NoHPA")
+				row.HPARecommendation = &hpaRec
 			}
 		} else if row.Recommendation.IsActionable {
 			// HPA present and working: switch to HPA tuning instead of resource change.
@@ -229,6 +230,8 @@ func applyHPARouting(row output.PodRow, appHPA *hpa.Info, u metrics.Usage, cpuRe
 		if appHPA == nil {
 			if !row.HPAWarningDisabled {
 				row.HPAWarning = "no HPA configured; resource increase may be a short-term fix"
+				hpaRec := analysis.RecommendHPAValues(u, cpuReq, memReq, nil, nil, 1, string(driver), "NoHPA")
+				row.HPARecommendation = &hpaRec
 			}
 		} else if appHPA.MaxReplicas > appHPA.CurrentReplicas {
 			// HPA has headroom — noop, let it scale out.
@@ -239,6 +242,8 @@ func applyHPARouting(row output.PodRow, appHPA *hpa.Info, u metrics.Usage, cpuRe
 	case analysis.BehaviorRunaway:
 		if appHPA == nil && !row.HPAWarningDisabled {
 			row.HPAWarning = "no HPA configured; pod is at OOM risk with no scaling relief"
+			hpaRec := analysis.RecommendHPAValues(u, cpuReq, memReq, nil, nil, 1, string(driver), "NoHPA")
+			row.HPARecommendation = &hpaRec
 		}
 		// Resource increase recommendation stands regardless of HPA state.
 

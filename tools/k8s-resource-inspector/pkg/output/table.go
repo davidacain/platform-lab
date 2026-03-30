@@ -140,6 +140,17 @@ func printFindings(rows []PodRow) {
 			ff = append(ff, finding{"REC", []string{"hold: " + r.Recommendation.HoldReason}})
 		}
 
+		if r.HPARecommendation != nil {
+			label := "add HPA"
+			switch r.HPARecommendation.Reason {
+			case "WontFire":
+				label = "fix HPA"
+			case "Tuning":
+				label = "tune HPA"
+			}
+			ff = append(ff, finding{label, []string{r.HPARecommendation.Text}})
+		}
+
 		if len(ff) > 0 {
 			seen[key] = true
 			sections = append(sections, section{

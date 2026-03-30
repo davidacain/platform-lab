@@ -44,8 +44,18 @@ type jsonRow struct {
 }
 
 type jsonHPA struct {
-	Status   string       `json:"status"`
-	Findings []jsonFinding `json:"findings,omitempty"`
+	Status         string        `json:"status"`
+	Findings       []jsonFinding  `json:"findings,omitempty"`
+	Recommendation *jsonHPARec   `json:"recommendation,omitempty"`
+}
+
+type jsonHPARec struct {
+	Text        string `json:"text"`
+	Driver      string `json:"driver"`
+	MinReplicas int32  `json:"min_replicas"`
+	TargetCPU   *int32 `json:"target_cpu_pct,omitempty"`
+	TargetMem   *int32 `json:"target_memory_pct,omitempty"`
+	Reason      string `json:"reason"`
 }
 
 type jsonFinding struct {
@@ -103,6 +113,17 @@ func PrintJSON(rows []PodRow) error {
 				Severity: f.Severity,
 				Message:  f.Message,
 			})
+		}
+
+		if r.HPARecommendation != nil {
+			jr.HPA.Recommendation = &jsonHPARec{
+				Text:        r.HPARecommendation.Text,
+				Driver:      r.HPARecommendation.Driver,
+				MinReplicas: r.HPARecommendation.MinReplicas,
+				TargetCPU:   r.HPARecommendation.TargetCPU,
+				TargetMem:   r.HPARecommendation.TargetMemory,
+				Reason:      r.HPARecommendation.Reason,
+			}
 		}
 
 		out = append(out, jr)
