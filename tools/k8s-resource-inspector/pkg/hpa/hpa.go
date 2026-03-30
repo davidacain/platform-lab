@@ -3,6 +3,7 @@ package hpa
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/analysis"
 	"github.com/davidacain/platform-lab/tools/k8s-resource-inspector/pkg/metrics"
@@ -270,6 +271,34 @@ func WontFire(h *Info, u metrics.Usage, cpuReq, memReq resource.Quantity, driver
 	}
 
 	return false
+}
+
+// RecommendMaxReplicasForSpike returns the maxReplicas needed so that the HPA
+// can scale from minReplicas to absorb a peak of spikeRatio × minReplicas.
+// Returns 0 when currentMax already provides sufficient headroom.
+func RecommendMaxReplicasForSpike(currentMax, minReplicas int32, spikeRatio float64) int32 {
+	if currentMax <= 0 || minReplicas <= 0 || spikeRatio <= 0 {
+		return 0
+	}
+	rec := int32(math.Ceil(float64(minReplicas) * spikeRatio))
+	if rec <= currentMax {
+		return 0
+	}
+	return rec
+}
+
+// RecommendMaxReplicasForGrowth returns a suggested maxReplicas for a workload
+// that has hit its scaling ceiling. growthFactor is applied to currentMax
+// (e.g. 1.5 for 50% headroom). Returns 0 if no increase is warranted.
+func RecommendMaxReplicasForGrowth(currentMax int32, growthFactor float64) int32 {
+	if currentMax <= 0 {
+		return 0
+	}
+	rec := int32(math.Ceil(float64(currentMax) * growthFactor))
+	if rec <= currentMax {
+		return 0
+	}
+	return rec
 }
 
 // RecommendMetricDriver returns the metric that should drive HPA scaling based

@@ -211,17 +211,26 @@ func BuildRows(ctx context.Context, cfg *config.Config, dynClient dynamic.Interf
 func applyHPARouting(row output.PodRow, appHPA *hpa.Info, u metrics.Usage, cpuReq, memReq resource.Quantity, driver hpa.MetricDriver, behavior analysis.BehaviorClass) output.PodRow {
 	switch behavior {
 	case analysis.BehaviorSpiky:
+		spikeRatio := safeRatio(u.CPUP99, u.CPUP50)
 		if appHPA == nil {
 			if !row.HPAWarningDisabled {
 				row.HPAWarning = "no HPA configured; consider adding one to handle traffic spikes"
 				hpaRec := analysis.RecommendHPAValues(u, cpuReq, memReq, nil, nil, 1, string(driver), "NoHPA")
 				row.HPARecommendation = &hpaRec
 			}
-		} else if row.Recommendation.IsActionable {
-			// HPA present and working: switch to HPA tuning instead of resource change.
+		} else {
+			// HPA present: tune it. For large spikes (>3x), also recommend a
+			// maxReplicas increase so the HPA has enough headroom to absorb peaks.
 			hpaRec := analysis.RecommendHPAValues(u, cpuReq, memReq,
 				appHPA.CPUTarget, appHPA.MemTarget, appHPA.MinReplicas,
 				string(driver), "Tuning")
+			if spikeRatio > 3.0 {
+				recMax := hpa.RecommendMaxReplicasForSpike(appHPA.MaxReplicas, appHPA.MinReplicas, spikeRatio)
+				if recMax > 0 {
+					hpaRec.MaxReplicas = &recMax
+					hpaRec.Text += fmt.Sprintf(", maxReplicas -> %d (spike %.1fx)", recMax, spikeRatio)
+				}
+			}
 			row.HPARecommendation = &hpaRec
 			row.Recommendation = analysis.Recommendation{Hold: true, HoldReason: "HPA tuning preferred for SPIKY workload"}
 		}
@@ -236,8 +245,20 @@ func applyHPARouting(row output.PodRow, appHPA *hpa.Info, u metrics.Usage, cpuRe
 		} else if appHPA.MaxReplicas > appHPA.CurrentReplicas {
 			// HPA has headroom — noop, let it scale out.
 			row.Recommendation = analysis.Recommendation{Hold: true, HoldReason: "GROWTH — HPA has headroom to scale out"}
+		} else {
+			// HPA maxed — recommend increasing maxReplicas instead of per-pod resources.
+			recMax := hpa.RecommendMaxReplicasForGrowth(appHPA.MaxReplicas, 1.5)
+			if recMax > 0 {
+				hpaRec := analysis.RecommendHPAValues(u, cpuReq, memReq,
+					appHPA.CPUTarget, appHPA.MemTarget, appHPA.MinReplicas,
+					string(driver), "Tuning")
+				hpaRec.MaxReplicas = &recMax
+				hpaRec.Text = fmt.Sprintf("increase maxReplicas -> %d (HPA at ceiling)", recMax)
+				row.HPARecommendation = &hpaRec
+				row.Recommendation = analysis.Recommendation{Hold: true, HoldReason: fmt.Sprintf("GROWTH — HPA maxed, increase maxReplicas to %d", recMax)}
+			}
+			// If RecommendMaxReplicasForGrowth returns 0, keep the resource increase.
 		}
-		// If maxed out (CurrentReplicas >= MaxReplicas), keep the resource increase recommendation.
 
 	case analysis.BehaviorRunaway:
 		if appHPA == nil && !row.HPAWarningDisabled {

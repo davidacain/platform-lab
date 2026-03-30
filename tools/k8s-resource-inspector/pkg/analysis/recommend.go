@@ -24,8 +24,9 @@ type HPARecommendation struct {
 	TargetCPU    *int32 // recommended CPU averageUtilization %, nil if memory should be targeted
 	TargetMemory *int32 // recommended memory averageUtilization %, nil if CPU should be targeted
 	MinReplicas  int32
-	Driver       string // "CPU" or "Memory"
-	Reason       string // "WontFire", "Tuning", or "NoHPA"
+	Driver      string // "CPU" or "Memory"
+	Reason      string // "WontFire", "Tuning", or "NoHPA"
+	MaxReplicas *int32 // recommended maxReplicas, nil if no change suggested
 }
 
 // ResourceValues holds the final desired state for container resources.

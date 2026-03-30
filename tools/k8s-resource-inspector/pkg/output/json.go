@@ -53,6 +53,7 @@ type jsonHPARec struct {
 	Text        string `json:"text"`
 	Driver      string `json:"driver"`
 	MinReplicas int32  `json:"min_replicas"`
+	MaxReplicas *int32 `json:"max_replicas,omitempty"`
 	TargetCPU   *int32 `json:"target_cpu_pct,omitempty"`
 	TargetMem   *int32 `json:"target_memory_pct,omitempty"`
 	Reason      string `json:"reason"`
@@ -120,6 +121,7 @@ func PrintJSON(rows []PodRow) error {
 				Text:        r.HPARecommendation.Text,
 				Driver:      r.HPARecommendation.Driver,
 				MinReplicas: r.HPARecommendation.MinReplicas,
+				MaxReplicas: r.HPARecommendation.MaxReplicas,
 				TargetCPU:   r.HPARecommendation.TargetCPU,
 				TargetMem:   r.HPARecommendation.TargetMemory,
 				Reason:      r.HPARecommendation.Reason,

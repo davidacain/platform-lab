@@ -41,10 +41,11 @@ type ContainerPlan struct {
 // HPAValues holds the recommended HPA configuration for a workload.
 type HPAValues struct {
 	MinReplicas                     int32  `yaml:"min_replicas"`
+	MaxReplicas                     *int32 `yaml:"max_replicas,omitempty"`
 	TargetCPUUtilizationPercentage  *int32 `yaml:"target_cpu_utilization_percentage,omitempty"`
 	TargetMemUtilizationPercentage  *int32 `yaml:"target_memory_utilization_percentage,omitempty"`
 	Driver                          string `yaml:"driver"` // CPU or Memory
-	Reason                          string `yaml:"reason"` // human-readable why (WontFire or Tuning)
+	Reason                          string `yaml:"reason"` // WontFire, Tuning, or NoHPA
 }
 
 // AppPlan holds the plan for a single ArgoCD application.
@@ -141,6 +142,7 @@ func BuildHPA(rows []output.PodRow, window string) []AppPlan {
 
 		hpaValues := &HPAValues{
 			MinReplicas: r.HPARecommendation.MinReplicas,
+			MaxReplicas: r.HPARecommendation.MaxReplicas,
 			Driver:      r.HPARecommendation.Driver,
 			Reason:      r.HPARecommendation.Reason,
 		}
